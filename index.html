@@ -404,8 +404,10 @@ function syncButtons(r, blocked) {
     b.onclick = fn
     out.push(b)
   }
-  if (!blocked && !r.upstream) add('Publicar rama', function () { pushDialog(r) })
-  else if (!blocked && r.ahead) add('Push ↑' + r.ahead, function () { pushDialog(r) })
+  // Con algo en Staged, un Push suelto parece que sube eso también: ahí va «Commit y Push».
+  var pending = r.staged.length
+  if (!blocked && !pending && !r.upstream) add('Publicar rama', function () { pushDialog(r) })
+  else if (!blocked && !pending && r.ahead) add('Push ↑' + r.ahead, function () { pushDialog(r) })
   if (r.behind) add('Pull ↓' + r.behind, function () { act(r.key, 'pull', null, 'Pull listo') })
   if (r.pr) {
     var link = el('a', 'commit ghost', 'Abrir PR')
@@ -441,7 +443,7 @@ function changesView(r, wrap) {
   btn.onclick = function () { commit(false) }
   buttons.appendChild(btn)
   if (!blocked) {
-    var both = el('button', 'commit ghost', 'Commit y Push')
+    var both = el('button', 'commit ghost', r.ahead ? 'Commit y Push ↑' + (r.ahead + 1) : 'Commit y Push')
     both.disabled = !r.staged.length
     both.onclick = function () { commit(true) }
     buttons.appendChild(both)
