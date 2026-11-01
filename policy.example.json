@@ -1,0 +1,8 @@
+{
+  "exclude": ["carpeta-que-no-quiero-ver"],
+  "rules": [
+    { "path": "~/proyectos/personal", "free": true },
+    { "under": "~/trabajo", "protected": ["main", "release"], "base": "develop" },
+    { "under": "~/cliente", "bases": "~/cliente/bases.json" }
+  ]
+}

@@ -1,6 +1,6 @@
 // Prueba las acciones de la app contra un repo descartable en una carpeta temporal. No toca los repos reales.
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -12,6 +12,8 @@ sh(tmp, 'git', 'init', '-q', '--bare', '-b', 'master', 'remote.git')
 sh(tmp, 'git', 'clone', '-q', 'remote.git', 'app')
 sh(repo, 'git', 'config', 'user.email', 'test@example.com')
 sh(repo, 'git', 'config', 'user.name', 'test')
+// El ignore global de cada máquina puede esconder los .env y volver inútiles las pruebas de secretos.
+sh(repo, 'git', 'config', 'core.excludesFile', '/dev/null')
 sh(repo, 'git', 'switch', '-q', '-c', 'master')
 writeFileSync(join(repo, 'a.txt'), '1\n')
 sh(repo, 'git', 'add', '.')
@@ -85,6 +87,26 @@ try {
   check('historial', log[0].t === 'init')
   check('detalle de commit', (await call(`/api/commit?repo=app&h=${log[0].h}`))[0] === 200)
   check('rechaza hash inválido', (await call('/api/commit?repo=app&h=HEAD'))[0] === 400)
+  writeFileSync(join(repo, '.env'), 'CLAVE=x\n')
+  writeFileSync(join(repo, '.env.example'), 'CLAVE=\n')
+  writeFileSync(join(repo, 'ok ñ.txt'), 'ok\n')
+  mkdirSync(join(repo, 'conf'))
+  writeFileSync(join(repo, 'conf/prod.pem'), 'x\n')
+  const blocked = await call('/api/action', { repo: 'app', action: 'stage_all' })
+  check('frena agregar todo con secretos, también dentro de una carpeta nueva', blocked[0] === 409 && blocked[1].sensitive.join() === '.env,conf/prod.pem')
+  check('al frenar no agrega nada', !(await state()).staged.length)
+  check('frena un archivo secreto suelto', (await act('stage', { path: '.env' })) === 409)
+  check('frena una carpeta con un secreto adentro', (await act('stage', { path: 'conf/' })) === 409)
+  check('agrega el resto sin los secretos', (await act('stage_all', { allow: 'skip' })) === 200)
+  s = await state()
+  check('el resto queda staged y los secretos no', s.staged.map((f) => f.p).sort().join() === '.env.example,ok ñ.txt' && s.changes.some((f) => f.p === '.env' && f.sensitive))
+  check('.env.example no se marca como secreto', !s.staged.some((f) => f.sensitive))
+  check('agrega el secreto si se confirma', (await act('stage', { path: '.env', allow: 'all' })) === 200)
+  check('commit con el secreto', (await act('commit', { message: 'con secreto' })) === 200)
+  const preview = (await call('/api/push?repo=app'))[1]
+  check('la vista previa del push lista commits y secretos', preview.count === 1 && preview.commits[0].t === 'con secreto' && preview.sensitive.join() === '.env')
+  await act('switch', { branch: 'master' })
+  check('no hay vista previa de push en rama protegida', (await call('/api/push?repo=app'))[0] === 400)
 } finally {
   close()
 }

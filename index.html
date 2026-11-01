@@ -53,16 +53,20 @@
   .hunk { color:var(--info); }
   .meta-line { color:var(--faint); }
 
-  .space { display:flex; align-items:center; gap:6px; height:28px; margin-top:6px; padding:0 8px; border-radius:6px; font-size:12px; font-weight:500; color:var(--muted); cursor:pointer; user-select:none; }
+  .space { display:flex; align-items:center; gap:7px; height:32px; margin-top:12px; padding:0 8px; border-radius:6px; color:var(--muted); cursor:pointer; user-select:none; }
+  #list > .space:first-child { margin-top:0; }
   .space:hover { background:var(--hover); }
-  .space b { font-weight:500; color:var(--soft); }
-  .repo { display:flex; align-items:center; gap:6px; height:30px; padding:0 6px 0 8px; border-radius:6px; cursor:pointer; user-select:none; }
+  .space b { font-size:13px; font-weight:600; color:var(--fg); }
+  .kids { margin:2px 0 0 13px; padding-left:5px; border-left:1px solid var(--line); }
+  .repo { display:flex; align-items:center; gap:6px; height:28px; padding:0 6px; border-radius:6px; cursor:pointer; user-select:none; }
   .repo:hover, .repo.open { background:var(--hover); }
-  .repo.plain { padding-left:26px; cursor:default; }
+  .repo.plain { padding-left:24px; cursor:default; }
   .repo.plain:hover { background:none; }
   .repo.plain .name { color:var(--faint); font-weight:400; }
   .repo.plain .count { display:block; color:var(--faint); }
-  .name { flex:none; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; color:var(--fg); }
+  .name { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:400; color:var(--soft); }
+  .repo:hover .name, .repo.open .name { color:var(--fg); }
+  .folder { color:var(--faint); }
   .branch { display:flex; align-items:center; gap:4px; min-width:0; padding:1px 5px; border:0; border-radius:5px; background:none; color:var(--muted); font-size:12px; cursor:pointer; }
   .branch:hover { background:var(--active); color:var(--fg); }
   .branch span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -78,7 +82,7 @@
   .chev { color:var(--faint); transition:transform .12s; }
   .chev.down { transform:rotate(90deg); }
 
-  .body { padding:8px 6px 10px 22px; }
+  .body { padding:8px 6px 10px 18px; }
   .seg { display:flex; gap:2px; padding:2px; margin-bottom:8px; border-radius:7px; background:var(--hover); }
   .seg button { flex:1; height:24px; border:0; border-radius:5px; background:none; color:var(--muted); font-size:12px; cursor:pointer; }
   .seg button.on { background:var(--active); color:var(--fg); }
@@ -89,6 +93,7 @@
   .commit { width:100%; height:28px; margin:6px 0 2px; border:0; border-radius:7px; background:var(--primary); color:var(--on-primary); font-size:12px; font-weight:500; cursor:pointer; }
   .commit:disabled { background:var(--hover); color:var(--faint); cursor:not-allowed; }
   .note { margin:6px 0 2px; font-size:12px; color:var(--muted); }
+  .note.warn, .path.warn { color:var(--warn); }
   .group { display:flex; align-items:center; height:24px; margin-top:8px; font-size:11px; font-weight:500; color:var(--faint); }
   .row { display:flex; align-items:center; gap:6px; height:24px; padding:0 2px 0 6px; border-radius:5px; cursor:pointer; }
   .row:hover { background:var(--hover); }
@@ -112,6 +117,19 @@
   .opt { display:flex; gap:10px; align-items:center; min-height:30px; padding:3px 8px; border-radius:6px; cursor:pointer; }
   .opt:hover { background:var(--hover); }
   .opt span:first-child { flex:1; min-width:0; overflow-wrap:anywhere; color:var(--fg); }
+
+  .dlg { display:flex; flex-direction:column; min-height:0; padding:14px; gap:8px; }
+  .dlg h2 { margin:0; font-size:13px; font-weight:600; color:var(--fg); }
+  .dlg p { margin:0; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+  .dlg p.warn { color:var(--warn); }
+  .dlg ul { min-height:0; margin:0; padding:0; overflow:auto; list-style:none; font:12px/1.7 var(--mono); color:var(--soft); }
+  .dlg li { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dlg li span { color:var(--faint); }
+  .acts { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; margin-top:6px; }
+  .acts button { height:28px; padding:0 12px; border:1px solid var(--line); border-radius:7px; background:none; font-size:12px; cursor:pointer; }
+  .acts button:hover { background:var(--hover); }
+  .acts button.primary { border-color:transparent; background:var(--primary); color:var(--on-primary); font-weight:500; }
+  .acts button.danger { color:var(--del); }
 
   /* En una vista dividida no entran las dos columnas: el diff pasa a ocupar la lista. */
   @media (max-width:760px) {
@@ -159,7 +177,9 @@ var ICONS = {
   push: '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   minus: '<path d="M5 12h14"/>',
-  back: '<path d="m15 18-6-6 6-6"/>'
+  back: '<path d="m15 18-6-6 6-6"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>'
 }
 function svg(name, size) {
   var wrap = document.createElement('span')
@@ -189,7 +209,7 @@ function el(tag, cls, text) {
 }
 function reply(r) {
   return r.json().then(function (j) {
-    if (!r.ok) throw new Error(j.error || 'Error')
+    if (!r.ok) throw Object.assign(new Error(j.error || 'Error'), { sensitive: j.sensitive })
     return j
   })
 }
@@ -214,7 +234,10 @@ function act(repo, action, extra, okText) {
     if (okText) toast(okText, true)
     delete logs[repo]
     return load(true)
-  }).catch(function (e) { toast(e.message) })
+  }).catch(function (e) {
+    if (e.sensitive) sensitiveDialog(repo, action, extra, okText, e.sensitive)
+    else toast(e.message)
+  })
 }
 function showDiff(title, text) {
   document.getElementById('title').textContent = title
@@ -249,8 +272,8 @@ function iconBtn(name, title, fn) {
 function fileRow(r, f, staged) {
   var row = el('div', 'row' + (selected === r.key + '|' + staged + '|' + f.p ? ' on' : ''))
   row.appendChild(el('span', 'st ' + f.s, f.s))
-  var p = el('span', 'path', f.p)
-  p.title = f.p
+  var p = el('span', 'path' + (f.sensitive ? ' warn' : ''), f.p)
+  p.title = f.sensitive ? 'Parece un secreto: ' + f.p : f.p
   row.appendChild(p)
   row.onclick = function () { openFile(r, f, staged) }
   row.appendChild(iconBtn(staged ? 'minus' : 'plus', staged ? 'Sacar de Staged' : 'Pasar a Staged', function () {
@@ -289,6 +312,7 @@ function changesView(r, wrap) {
   btn.onclick = commit
   wrap.appendChild(btn)
   if (blocked) wrap.appendChild(el('div', 'note', r.detached ? 'HEAD suelto: cambiá a una rama para commitear.' : r.branch + ' está protegida. Creá una rama desde origin/' + r.base + ' tocando el nombre de la rama.'))
+  if (r.staged.some(function (f) { return f.sensitive })) wrap.appendChild(el('div', 'note warn', 'Hay archivos en Staged que parecen secretos.'))
   group(r, 'Staged', r.staged, true, wrap)
   group(r, 'Cambios', r.changes, false, wrap)
   if (!r.staged.length && !r.changes.length) wrap.appendChild(el('div', 'note', 'Sin cambios.'))
@@ -312,6 +336,66 @@ function historyView(r, wrap) {
 }
 function closeModal() { document.getElementById('modal').style.display = 'none' }
 document.getElementById('modal').onclick = function (e) { if (e.target === this) closeModal() }
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal() })
+// El botón que queda con foco siempre es la salida segura.
+function dialog(title, lines, items, actions) {
+  var box = document.getElementById('box')
+  box.textContent = ''
+  var d = el('div', 'dlg')
+  d.appendChild(el('h2', '', title))
+  lines.forEach(function (l) { d.appendChild(el('p', l.warn ? 'warn' : '', l.text)) })
+  if (items.length) {
+    var ul = el('ul')
+    items.forEach(function (item) { ul.appendChild(item) })
+    d.appendChild(ul)
+  }
+  var acts = el('div', 'acts')
+  var safe = null
+  actions.forEach(function (a) {
+    var b = el('button', a.kind || '', a.label)
+    b.onclick = function () { closeModal(); if (a.run) a.run() }
+    acts.appendChild(b)
+    if (a.safe) safe = b
+  })
+  d.appendChild(acts)
+  box.appendChild(d)
+  document.getElementById('modal').style.display = 'flex'
+  if (safe) safe.focus()
+}
+function fileItem(path) {
+  var li = el('li', '', path)
+  li.title = path
+  return li
+}
+function sensitiveDialog(repo, action, extra, okText, files) {
+  var with_ = function (allow) { return Object.assign({}, extra || {}, { allow: allow }) }
+  var actions = [{ label: 'Cancelar', safe: action !== 'stage_all' }]
+  if (action === 'stage_all') actions.push({ label: 'Agregar el resto', kind: 'primary', safe: true, run: function () { act(repo, action, with_('skip'), okText) } })
+  actions.push({ label: action === 'stage_all' ? 'Agregar todo igual' : 'Agregar igual', kind: 'danger', run: function () { act(repo, action, with_('all'), okText) } })
+  dialog('Esto parece un secreto', [{ text: 'Si entra en un commit y lo subís, queda en el historial del remoto aunque después lo borres.' }], files.map(fileItem), actions)
+}
+function pushDialog(r) {
+  api('/api/push?repo=' + encodeURIComponent(r.key)).then(function (j) {
+    var run = function () { act(r.key, 'push', null, 'Push listo') }
+    var lines = [{ text: j.remote }]
+    if (j.sensitive.length) lines.push({ warn: true, text: 'Estos commits tocan archivos que parecen secretos: ' + j.sensitive.join(', ') })
+    if (j.isNew) lines.push({ text: 'La rama todavía no existe en el remoto: se va a crear.' })
+    var items = j.commits.map(function (c) {
+      var li = el('li')
+      li.appendChild(el('span', '', c.h + ' '))
+      li.appendChild(document.createTextNode(c.t))
+      li.title = c.t
+      return li
+    })
+    var more = j.count - j.commits.length
+    if (more > 0) items.push(el('li', '', 'y ' + more + ' más'))
+    var nothing = !j.isNew && !j.count
+    var title = nothing ? 'Nada para subir en ' + j.branch : 'Subir ' + j.count + (j.count === 1 ? ' commit' : ' commits') + ' de ' + j.branch
+    var actions = [{ label: nothing ? 'Cerrar' : 'Cancelar', safe: nothing || !!j.sensitive.length }]
+    if (!nothing) actions.push({ label: j.sensitive.length ? 'Subir igual' : 'Subir', kind: j.sensitive.length ? 'danger' : 'primary', safe: !j.sensitive.length, run: run })
+    dialog(title, lines, items, actions)
+  }).catch(function (e) { toast(e.message) })
+}
 function branchPicker(r) {
   api('/api/branches?repo=' + encodeURIComponent(r.key)).then(function (j) {
     var box = document.getElementById('box')
@@ -344,15 +428,21 @@ function branchPicker(r) {
       })
     }
     input.oninput = paint
-    input.onkeydown = function (e) { if (e.key === 'Escape') closeModal() }
     paint()
     document.getElementById('modal').style.display = 'flex'
     input.focus()
   }).catch(function (e) { toast(e.message) })
 }
+function folderIcon(r) {
+  var icon = svg('folder')
+  icon.setAttribute('class', 'folder')
+  if (r.color) icon.style.color = r.color // el color que el repo tiene en Orca
+  return icon
+}
 function plainView(r) {
   var row = el('div', 'repo plain')
   row.title = 'Este proyecto de Orca no tiene un repo de git'
+  row.appendChild(folderIcon(r))
   row.appendChild(el('span', 'name', r.name))
   row.appendChild(el('span', 'grow'))
   row.appendChild(el('span', 'count', 'sin git'))
@@ -366,6 +456,7 @@ function repoView(r) {
   var chev = svg('chevron', 12)
   chev.setAttribute('class', 'chev' + (open ? ' down' : ''))
   h.appendChild(chev)
+  h.appendChild(folderIcon(r))
   h.appendChild(el('span', 'name', r.name))
   var chip = el('button', 'branch' + (r.protected ? ' locked' : ''))
   chip.title = (r.protected ? 'Rama protegida. ' : '') + 'Cambiar de rama'
@@ -381,7 +472,7 @@ function repoView(r) {
   var tools = el('span', 'tools')
   tools.appendChild(iconBtn('fetch', 'Fetch', function () { act(r.key, 'fetch', null, 'Fetch listo') }))
   tools.appendChild(iconBtn('pull', 'Pull (solo fast-forward)', function () { act(r.key, 'pull', null, 'Pull listo') }))
-  if (!r.protected) tools.appendChild(iconBtn('push', 'Push de esta rama', function () { act(r.key, 'push', null, 'Push listo') }))
+  if (!r.protected) tools.appendChild(iconBtn('push', 'Push de esta rama', function () { pushDialog(r) }))
   h.appendChild(tools)
   h.onclick = function () { expanded[r.key] = !expanded[r.key]; render() }
   wrap.appendChild(h)
@@ -406,6 +497,7 @@ function spaceView(name, repos, term) {
   var chev = svg('chevron', 12)
   chev.setAttribute('class', 'chev' + (closed ? '' : ' down'))
   h.appendChild(chev)
+  h.appendChild(svg('layers'))
   h.appendChild(el('b', 'grow', name))
   var dirty = repos.reduce(function (n, r) { return n + (r.staged.length + r.changes.length ? 1 : 0) }, 0)
   h.appendChild(el('span', 'count' + (dirty ? ' dirty' : ''), dirty ? dirty + ' con cambios' : String(repos.length)))
@@ -415,7 +507,10 @@ function spaceView(name, repos, term) {
     render()
   }
   list.appendChild(h)
-  if (!closed) repos.forEach(function (r) { list.appendChild(repoView(r)) })
+  if (closed) return
+  var kids = el('div', 'kids')
+  repos.forEach(function (r) { kids.appendChild(repoView(r)) })
+  list.appendChild(kids)
 }
 function render() {
   var top = list.scrollTop

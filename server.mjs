@@ -21,6 +21,10 @@ const MAX_DIFF = 400_000
 const READ_MS = 20_000
 const WRITE_MS = 120_000
 const HASH_RE = /^[0-9a-f]{4,40}$/
+const COLOR_RE = /^#[0-9a-f]{3,8}$/i
+const PUSH_PREVIEW = 50
+// Solo pide confirmación: un falso positivo cuesta un clic, y un secreto subido no se puede deshacer.
+const SENSITIVE_RE = /(^|\/)(\.env(\.(?!example$|sample$|template$|dist$)[^/]+)?|\.netrc|\.npmrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.[^/]+)?|secrets?(\.[^/]+)?|[^/]+\.(pem|key|p12|pfx|jks|keystore|tfstate|tfvars))$/i
 
 const READ_ENV = {
   ...process.env,
@@ -34,6 +38,16 @@ const READ_ENV = {
 const WRITE_ENV = { ...READ_ENV, GIT_OPTIONAL_LOCKS: '1' }
 
 class ActionError extends Error {}
+
+class SensitiveError extends ActionError {
+  status = 409
+  constructor(files) {
+    super('Hay archivos que parecen secretos.')
+    this.extra = { sensitive: files }
+  }
+}
+
+const isSensitive = (rel) => SENSITIVE_RE.test(rel)
 
 function run(args, { env = READ_ENV, timeout = READ_MS, input = null, check = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -133,11 +147,12 @@ function listRepos() {
     const path = (repo.path ?? '').replace(/\/+$/, '')
     if (!path || path.split(sep).some((part) => exclude.includes(part)) || !existsSync(path)) continue
     const group = groups.get(repo.projectGroupId)?.name ?? 'Sin grupo'
-    if (isRepo(path)) found.push({ key: path, name: repo.displayName || basename(path), path, group })
+    const color = COLOR_RE.test(repo.badgeColor ?? '') ? repo.badgeColor : null
+    if (isRepo(path)) found.push({ key: path, name: repo.displayName || basename(path), path, group, color })
     else {
       const nested = nestedRepos(path)
-      for (const p of nested) found.push({ key: p, name: basename(p), path: p, group })
-      if (!nested.length) found.push({ key: path, name: repo.displayName || basename(path), path, group, plain: true })
+      for (const p of nested) found.push({ key: p, name: basename(p), path: p, group, color })
+      if (!nested.length) found.push({ key: path, name: repo.displayName || basename(path), path, group, color, plain: true })
     }
   }
   return found
@@ -226,16 +241,25 @@ function parseStatus(raw) {
 
 const status = async (path) => parseStatus(await git(path, 'status', '--porcelain=v2', '--branch', '-z'))
 
+// Con -uall una carpeta nueva se abre archivo por archivo: si no, un .env adentro pasaría sin verse.
+async function unstagedFiles(path) {
+  const { changes } = parseStatus(await git(path, 'status', '--porcelain=v2', '-z', '-uall'))
+  return changes.map((f) => f.p)
+}
+
+const withFlag = (files) => files.map((f) => (isSensitive(f.p) ? { ...f, sensitive: true } : f))
+
 async function summary(item) {
-  if (item.plain) return { key: item.key, name: item.name, group: item.group, plain: true, staged: [], changes: [] }
+  if (item.plain) return { key: item.key, name: item.name, group: item.group, color: item.color, plain: true, staged: [], changes: [] }
   const { head, staged, changes } = await status(item.path)
   const { blocked, base } = await policy(item.path)
   const [ahead = '+0', behind = '-0'] = (head['branch.ab'] ?? '').split(' ')
   const branch = head['branch.head'] ?? '?'
   return {
-    key: item.key, name: item.name, group: item.group, branch, base,
+    key: item.key, name: item.name, group: item.group, color: item.color, branch, base,
     detached: branch === '(detached)', upstream: head['branch.upstream'] ?? null,
-    ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch), staged, changes
+    ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch),
+    staged: withFlag(staged), changes: withFlag(changes)
   }
 }
 
@@ -273,19 +297,59 @@ async function fileDiff(path, rel, isStaged) {
   return (await git(path, 'diff', ...(isStaged ? ['--cached'] : []), '--', rel)).slice(0, MAX_DIFF)
 }
 
+async function pushPreview(item) {
+  const { path } = item
+  const state = await summary(item)
+  if (state.protected || state.detached) throw new ActionError(`No se pushea ${state.branch}.`)
+  // Una rama sin upstream sube todo lo que tiene por encima de la base.
+  const range = `${state.upstream ? '@{u}' : `origin/${state.base}`}..HEAD`
+  const [log, count, files, url] = await Promise.all([
+    git(path, 'log', `-${PUSH_PREVIEW}`, '--format=%h%x1f%s', range),
+    git(path, 'rev-list', '--count', range),
+    git(path, 'log', '--name-only', '--diff-filter=d', '-z', '--format=', range),
+    git(path, 'remote', 'get-url', 'origin')
+  ])
+  const touched = files.split('\0').map((f) => f.trim()).filter(Boolean)
+  return {
+    branch: state.branch,
+    isNew: !state.upstream,
+    remote: url.trim().replace(/\/\/[^/@]+@/, '//'), // una URL https puede traer el token adentro
+    count: Number(count) || 0,
+    commits: log.split('\n').filter(Boolean).map((line) => {
+      const [h, t] = line.split('\x1f')
+      return { h, t }
+    }),
+    sensitive: [...new Set(touched.filter(isSensitive))]
+  }
+}
+
+async function stageAll(path, allow) {
+  const files = await unstagedFiles(path)
+  const risky = files.filter(isSensitive)
+  if (!risky.length || allow === 'all') return write(path, ['add', '-A'])
+  if (allow !== 'skip') throw new SensitiveError(risky)
+  const rest = files.filter((f) => !isSensitive(f))
+  if (rest.length) return write(path, ['--literal-pathspecs', 'add', '--pathspec-from-file=-', '--pathspec-file-nul'], rest.join('\0'))
+}
+
 async function act(item, body) {
   const { path } = item
   const state = await summary(item)
   const locked = state.protected || state.detached
   switch (body.action) {
     case 'stage':
+    {
       await changedFile(path, body.path)
+      const inside = (await unstagedFiles(path)).filter((f) => f === body.path || (body.path.endsWith('/') && f.startsWith(body.path)))
+      const risky = inside.filter(isSensitive)
+      if (risky.length && body.allow !== 'all') throw new SensitiveError(risky)
       return write(path, ['add', '--', body.path])
+    }
     case 'unstage':
       await changedFile(path, body.path)
       return write(path, ['restore', '--staged', '--', body.path])
     case 'stage_all':
-      return write(path, ['add', '-A'])
+      return stageAll(path, body.allow)
     case 'unstage_all':
       return write(path, ['restore', '--staged', '--', '.'])
     case 'commit': {
@@ -386,7 +450,9 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
       for (const r of listRepos()) items.push(await summary(r))
       return reply(res, 200, items)
     }
-    const { path } = repoOf(q.get('repo'))
+    const item = repoOf(q.get('repo'))
+    const { path } = item
+    if (url.pathname === '/api/push') return reply(res, 200, await pushPreview(item))
     if (url.pathname === '/api/history') return reply(res, 200, await history(path))
     if (url.pathname === '/api/branches') return reply(res, 200, await branches(path))
     if (url.pathname === '/api/diff') return reply(res, 200, { diff: await fileDiff(path, q.get('path'), q.get('staged') === '1') })
@@ -421,7 +487,7 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
       const handler = req.method === 'POST' ? post(req, res, allowedHost) : get(req, res, url, allowedHost)
       handler.catch((e) => {
         if (res.headersSent) return
-        if (e instanceof ActionError) reply(res, 400, { error: e.message })
+        if (e instanceof ActionError) reply(res, e.status ?? 400, { error: e.message, ...e.extra })
         else reply(res, 500, { error: 'Error interno' })
       })
     })
