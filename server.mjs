@@ -5,9 +5,10 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir } from 'node:os'
-import { basename, join, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
+import { openTerminal } from './orca-tab.mjs'
 
 const HOME = homedir()
 const INDEX = fileURLToPath(new URL('./index.html', import.meta.url))
@@ -136,9 +137,36 @@ function nestedRepos(folder) {
     .sort((a, b) => a.localeCompare(b))
 }
 
+// Se lee del disco porque corre en cada pedido: lanzar git por repo acá sumaría decenas de procesos.
+function worktreesOf(item) {
+  const dir = join(item.path, '.git', 'worktrees')
+  if (!existsSync(dir)) return []
+  const rootName = basename(item.path)
+  return readdirSync(dir).flatMap((id) => {
+    try {
+      const path = dirname(readFileSync(join(dir, id, 'gitdir'), 'utf8').trim())
+      if (!existsSync(path)) return [] // quedó registrado, pero la carpeta ya no está
+      const name = basename(path) === rootName ? basename(dirname(path)) : basename(path)
+      return [{ ...item, key: path, name, path, root: item.path, worktreeOf: item.key }]
+    } catch {
+      return [] // otro proceso lo está creando o borrando
+    }
+  })
+}
+
+function withWorktrees(items) {
+  const seen = new Set(items.map((r) => r.key))
+  return items.flatMap((item) => {
+    if (item.plain) return [item]
+    const extra = worktreesOf(item).filter((w) => !seen.has(w.key))
+    extra.forEach((w) => seen.add(w.key))
+    return [item, ...extra]
+  })
+}
+
 function listRepos() {
   if (REPOS_FILE) {
-    return JSON.parse(readFileSync(REPOS_FILE, 'utf8')).map((r) => ({ key: r.name, name: r.name, path: r.path, group: '' }))
+    return withWorktrees(JSON.parse(readFileSync(REPOS_FILE, 'utf8')).map((r) => ({ key: r.name, name: r.name, path: r.path, group: '' })))
   }
   const data = orcaData()
   const groups = new Map((data.projectGroups ?? []).map((g) => [g.id, g]))
@@ -161,7 +189,7 @@ function listRepos() {
       if (!nested.length) found.push({ key: path, name: repo.displayName || basename(path), path, group, color, plain: true })
     }
   }
-  return found
+  return withWorktrees(found)
 }
 
 const expandHome = (path) => path.replace(/^~(?=\/|$)/, HOME)
@@ -184,7 +212,47 @@ function readPolicy() {
     under: r.under && expandHome(r.under),
     bases: r.bases && expandHome(r.bases)
   }))
-  return { rules, exclude: Array.isArray(data?.exclude) ? data.exclude : [] }
+  const scoped = (c) => ({ ...c, under: c.under && expandHome(c.under) })
+  return {
+    rules,
+    exclude: Array.isArray(data?.exclude) ? data.exclude : [],
+    floating: data?.terminal === 'floating',
+    commands: (Array.isArray(data?.commands) ? data.commands : []).map(scoped),
+    worktrees: data?.worktrees ? scoped(data.worktrees) : null
+  }
+}
+
+const inScope = (entry, path) => !entry?.under || path === entry.under || path.startsWith(entry.under + sep)
+
+export const shellQuote = (text) => `'${String(text).replaceAll("'", `'\\''`)}'`
+
+export function fillCommand(template, values) {
+  return template.replace(/\{(repo|path|branch)\}/g, (_, key) => shellQuote(values[key]))
+}
+
+function gitDir(path) {
+  const dot = join(path, '.git')
+  if (statSync(dot).isDirectory()) return dot
+  const target = readFileSync(dot, 'utf8').replace(/^gitdir:\s*/, '').trim()
+  return isAbsolute(target) ? target : resolve(path, target)
+}
+
+function stopped(path) {
+  try {
+    const dir = gitDir(path)
+    return ['MERGE_HEAD', 'CHERRY_PICK_HEAD'].some((f) => existsSync(join(dir, f)))
+  } catch {
+    return false // el worktree se está borrando
+  }
+}
+
+function commandsFor(root, isMerging) {
+  const { commands, worktrees } = readPolicy()
+  const list = commands.flatMap((c, id) =>
+    inScope(c, root) && (c.when !== 'merging' || isMerging) ? [{ id, label: c.label, run: c.run, warn: !!c.warn }] : []
+  )
+  const wt = worktrees && inScope(worktrees, root) ? worktrees : null
+  return { commands: list, canCreateWorktree: !!wt?.create, canRemoveWorktree: !!wt?.remove }
 }
 
 const remoteHeads = new Map()
@@ -220,19 +288,19 @@ async function remoteUrl(path) {
   return url
 }
 
-async function policy(path) {
+async function policy(path, root = path) {
   const remote = await remoteDefault(path)
   const strict = { blocked: new Set([...DEFAULT_PROTECTED, ...(remote ? [remote] : [])]), base: remote ?? 'main' }
-  const rule = readPolicy().rules.find((r) => r.path === path || (r.under && path.startsWith(r.under + sep)))
+  const rule = readPolicy().rules.find((r) => r.path === root || (r.under && root.startsWith(r.under + sep)))
   if (!rule) return strict
   if (rule.free) return { blocked: new Set(), base: strict.base }
   if (rule.bases) {
     const data = readJson(rule.bases)
     if (!data) return strict
-    const name = basename(path)
+    const name = basename(root)
     const base = data.repos?.[name] ?? data.default ?? strict.base
     if (data.git_libre?.includes(name)) return { blocked: new Set(), base }
-    return { blocked: new Set([base, data.diagnostico?.[name] ?? base]), base }
+    return { blocked: new Set([base, data.diagnostico?.[name] ?? base]), base, deploys: true }
   }
   return { blocked: new Set(rule.protected ?? strict.blocked), base: rule.base ?? strict.base }
 }
@@ -280,13 +348,15 @@ const withFlag = (files) => files.map((f) => (isSensitive(f.p) ? { ...f, sensiti
 async function summary(item) {
   if (item.plain) return { key: item.key, name: item.name, group: item.group, color: item.color, plain: true, staged: [], changes: [] }
   const { head, staged, changes } = await status(item.path)
-  const { blocked, base } = await policy(item.path)
+  const root = item.root ?? item.path
+  const { blocked, base, deploys = false } = await policy(item.path, root)
   const [ahead = '+0', behind = '-0'] = (head['branch.ab'] ?? '').split(' ')
   const branch = head['branch.head'] ?? '?'
   const upstream = head['branch.upstream'] ?? null
   const offersPr = upstream && !blocked.has(branch) && branch !== base && branch !== '(detached)'
   return {
-    key: item.key, name: item.name, group: item.group, color: item.color, branch, base,
+    key: item.key, name: item.name, group: item.group, color: item.color, branch, base, deploys,
+    worktreeOf: item.worktreeOf ?? null, ...commandsFor(root, stopped(item.path)),
     detached: branch === '(detached)', upstream,
     pr: offersPr ? prUrl(await remoteUrl(item.path), branch, base) : null,
     ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch),
@@ -361,6 +431,28 @@ async function stageAll(path, allow) {
   if (allow !== 'skip') throw new SensitiveError(risky)
   const rest = files.filter((f) => !isSensitive(f))
   if (rest.length) return write(path, ['--literal-pathspecs', 'add', '--pathspec-from-file=-', '--pathspec-file-nul'], rest.join('\0'))
+}
+
+async function terminalCommand(item, body) {
+  const root = item.root ?? item.path
+  const { commands, worktrees } = readPolicy()
+  const values = { repo: root, path: item.path, branch: '' }
+  if (body.command === 'wt-create' || body.command === 'wt-remove') {
+    if (!worktrees || !inScope(worktrees, root)) throw new ActionError('Worktrees no configurados para este repo.')
+    if (body.command === 'wt-create') {
+      const branch = String(body.branch ?? '').trim()
+      const valid = await run(['check-ref-format', '--branch', branch])
+      if (valid.code !== 0 || branch.startsWith('-')) throw new ActionError('Nombre de rama inválido.')
+      return { title: `worktree ${branch}`, command: fillCommand(worktrees.create, { ...values, branch }) }
+    }
+    if (!item.worktreeOf) throw new ActionError('Esto no es un worktree.')
+    const branch = (await git(item.path, 'symbolic-ref', '--short', '-q', 'HEAD')).trim()
+    if (!branch) throw new ActionError('El worktree no está en una rama.')
+    return { title: `borrar ${branch}`, command: fillCommand(worktrees.remove, { ...values, branch }) }
+  }
+  const entry = commands[Number(body.command)]
+  if (!entry || !inScope(entry, root)) throw new ActionError('Comando desconocido.')
+  return { title: `${entry.label} · ${item.name}`, command: `cd ${shellQuote(item.path)} && ${fillCommand(entry.run, values)}` }
 }
 
 async function discard(path, rel) {
@@ -447,7 +539,7 @@ function readBody(req) {
   })
 }
 
-export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
+export function startServer({ port = 0, idleMs = 0, onIdle, terminal = openTerminal } = {}) {
   const token = process.env.MRG_TOKEN ?? randomBytes(32).toString('base64url')
   // Se lee una sola vez: si el plugin se actualiza, un servidor viejo no debe servir una página que no sabe atender.
   const page = readFileSync(INDEX)
@@ -556,6 +648,15 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
       throw e instanceof ActionError ? e : new ActionError('Pedido inválido.')
     }
     const item = repoOf(body.repo)
+    if (url.pathname === '/api/run') {
+      const { title, command } = await terminalCommand(item, body)
+      try {
+        await terminal({ title, command, floating: readPolicy().floating })
+      } catch {
+        throw new ActionError('No pude abrir la terminal de Orca.')
+      }
+      return reply(res, 200, { ok: true })
+    }
     summaries.delete(item.key)
     await inOrder(item.key, () => act(item, body))
     summaries.delete(item.key)

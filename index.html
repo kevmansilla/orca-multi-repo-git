@@ -70,6 +70,10 @@
   .kids { margin:2px 0 0 13px; padding-left:5px; border-left:1px solid var(--line); }
   .repo { display:flex; align-items:center; gap:6px; height:28px; padding:0 6px; border-radius:6px; cursor:pointer; user-select:none; }
   .repo:hover, .repo.open { background:var(--hover); }
+  .repo.wt { margin-left:18px; }
+  .repo.wt .name { color:var(--muted); }
+  .more { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
+  .dlg input { height:32px; padding:0 10px; }
   .repo.plain { padding-left:24px; cursor:default; }
   .repo.plain:hover { background:none; }
   .repo.plain .name { color:var(--faint); font-weight:400; }
@@ -507,6 +511,58 @@ function sensitiveDialog(repo, action, extra, okText, files) {
   actions.push({ label: action === 'stage_all' ? 'Agregar todo igual' : 'Agregar igual', kind: 'danger', run: function () { act(repo, action, with_('all'), okText) } })
   dialog('Esto parece un secreto', [{ text: 'Si entra en un commit y lo subís, queda en el historial del remoto aunque después lo borres.' }], files.map(fileItem), actions)
 }
+function runInTerminal(r, command, extra) {
+  fetch('/api/run', {
+    method: 'POST',
+    headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ repo: r.key, command: command }, extra || {}))
+  }).then(reply).catch(function (e) { toast(e.message) })
+}
+function commandClick(r, c) {
+  if (!c.warn || !r.deploys) return runInTerminal(r, c.id)
+  dialog('Esto puede desplegar', [
+    { warn: true, text: 'En este repo, lo que llega a ' + r.base + ' por push se despliega.' },
+    { text: 'Se abre una terminal con tu comando. Antes del push te va a pedir confirmación ahí.' }
+  ], [fileItem(c.run)], [
+    { label: 'Cancelar', safe: true },
+    { label: 'Abrir terminal', kind: 'primary', run: function () { runInTerminal(r, c.id) } }
+  ])
+}
+function newWorktreeDialog(r) {
+  var input = el('input')
+  input.placeholder = 'Rama del ticket'
+  function create() {
+    var branch = input.value.trim()
+    closeModal()
+    if (branch) runInTerminal(r, 'wt-create', { branch: branch })
+  }
+  dialog('Nuevo worktree de ' + r.name, [{ text: 'Si la rama no existe, se crea desde origin/' + r.base + '.' }], [], [
+    { label: 'Cancelar' },
+    { label: 'Crear', kind: 'primary', run: create }
+  ])
+  var d = document.querySelector('.dlg')
+  d.insertBefore(input, d.querySelector('.acts'))
+  input.onkeydown = function (e) { if (e.key === 'Enter') create() }
+  input.focus()
+}
+function removeWorktreeDialog(r) {
+  dialog('Borrar worktree', [{ text: 'Se abre una terminal con tu comando. Si hay cambios sin commitear, se frena ahí.' }], [fileItem(r.branch)], [
+    { label: 'Cancelar', safe: true },
+    { label: 'Borrar', kind: 'danger', run: function () { runInTerminal(r, 'wt-remove') } }
+  ])
+}
+function moreActions(r, wrap) {
+  var row = el('div', 'more')
+  function add(label, fn) {
+    var b = el('button', 'chip', label)
+    b.onclick = fn
+    row.appendChild(b)
+  }
+  r.commands.forEach(function (c) { add(c.label, function () { commandClick(r, c) }) })
+  if (r.canCreateWorktree && !r.worktreeOf) add('Nuevo worktree', function () { newWorktreeDialog(r) })
+  if (r.canRemoveWorktree && r.worktreeOf) add('Borrar worktree', function () { removeWorktreeDialog(r) })
+  if (row.firstChild) wrap.appendChild(row)
+}
 function discardDialog(r, f) {
   var text = f.new ? 'Es un archivo nuevo: se borra del disco y no se puede recuperar.' : 'Vuelve a la última versión guardada. Lo que cambiaste se pierde y no se puede recuperar.'
   dialog(f.new ? 'Borrar archivo nuevo' : 'Descartar cambios', [{ text: text }], [fileItem(f.p)], [
@@ -592,7 +648,8 @@ function repoView(r) {
   if (r.plain) return plainView(r)
   var wrap = el('section')
   var open = !!expanded[r.key]
-  var h = el('div', 'repo' + (open ? ' open' : ''))
+  var h = el('div', 'repo' + (open ? ' open' : '') + (r.worktreeOf ? ' wt' : ''))
+  if (r.worktreeOf) h.title = 'Worktree'
   var chev = svg('chevron', 12)
   chev.setAttribute('class', 'chev' + (open ? ' down' : ''))
   h.appendChild(chev)
@@ -641,6 +698,7 @@ function repoView(r) {
     body.appendChild(seg)
     if ((tab[r.key] || 'Cambios') === 'Cambios') changesView(r, body)
     else historyView(r, body)
+    moreActions(r, body)
     wrap.appendChild(body)
   }
   return wrap

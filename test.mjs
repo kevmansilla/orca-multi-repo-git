@@ -1,6 +1,6 @@
 // Prueba las acciones de la app contra un repo descartable en una carpeta temporal. No toca los repos reales.
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,12 +27,21 @@ sh(tmp, 'git', 'clone', '-q', 'remote.git', 'sin-regla')
 sh(tmp, 'git', 'clone', '-q', 'remote.git', 'libre')
 writeFileSync(join(tmp, 'bases.json'), JSON.stringify({ default: 'main', repos: { app: 'master' }, diagnostico: {}, git_libre: [] }))
 writeFileSync(join(tmp, 'repos.json'), JSON.stringify(['app', 'sin-regla', 'libre'].map((name) => ({ name, path: join(tmp, name) }))))
-writeFileSync(join(tmp, 'policy.json'), JSON.stringify({ rules: [{ path: repo, bases: join(tmp, 'bases.json') }, { path: join(tmp, 'libre'), free: true }] }))
+writeFileSync(join(tmp, 'policy.json'), JSON.stringify({
+  rules: [{ path: repo, bases: join(tmp, 'bases.json') }, { path: join(tmp, 'libre'), free: true }],
+  commands: [
+    { label: 'Mergear', run: 'git p -m', warn: true },
+    { label: 'Continuar', run: 'git p -c', when: 'merging' },
+    { label: 'Otro', run: 'git otro', under: join(tmp, 'libre') }
+  ],
+  worktrees: { create: 'git wt {repo} {branch}', remove: 'git wt -d {repo} {branch}' }
+}))
 process.env.MRG_REPOS_FILE = join(tmp, 'repos.json')
 process.env.MRG_POLICY_FILE = join(tmp, 'policy.json')
 
-const { prUrl, startServer } = await import('./server.mjs')
-const { port, token, close } = await startServer()
+const { fillCommand, prUrl, shellQuote, startServer } = await import('./server.mjs')
+const opened = []
+const { port, token, close } = await startServer({ terminal: async (t) => opened.push(t) })
 const base = `http://127.0.0.1:${port}`
 let failures = 0
 
@@ -120,6 +129,26 @@ try {
   check('link de PR en GitHub', prUrl('git@github.com:a/b.git', 'x/y', 'main') === 'https://github.com/a/b/compare/main...x/y?expand=1')
   check('link de PR en Bitbucket', prUrl('https://u:t@bitbucket.org/a/b.git', 'x', 'dev') === 'https://bitbucket.org/a/b/pull-requests/new?source=x&t=1')
   check('sin link de PR en un host desconocido', prUrl('git@mi-alias:a/b.git', 'x', 'main') === null)
+  const repoInfo = await state()
+  check('muestra solo los comandos que aplican', repoInfo.commands.map((c) => c.label).join() === 'Mergear')
+  check('marca el repo que despliega', repoInfo.deploys === true)
+  const run = async (body) => (await call('/api/run', { repo: 'app', ...body }))[0]
+  check('abre la terminal con el comando configurado', (await run({ command: 0 })) === 200 && opened.at(-1).command === `cd ${shellQuote(repo)} && git p -m`)
+  check('rechaza un comando desconocido', (await run({ command: 9 })) === 400)
+  check('rechaza un comando de otro repo', (await run({ command: 2 })) === 400)
+  check('rechaza crear worktree con rama inválida', (await run({ command: 'wt-create', branch: '-x; rm' })) === 400)
+  check('crea worktree con el comando configurado', (await run({ command: 'wt-create', branch: 'rama-wt' })) === 200 && opened.at(-1).command === `git wt ${shellQuote(repo)} 'rama-wt'`)
+  check('rechaza borrar el repo principal como worktree', (await run({ command: 'wt-remove' })) === 400)
+  check('escapa comillas al armar el comando', fillCommand('x {branch}', { branch: "a'b" }) === `x 'a'\\''b'`)
+  sh(repo, 'git', 'worktree', 'add', '-q', '-b', 'rama-real', join(tmp, 'wt-real'), 'HEAD')
+  const withWt = (await call('/api/repos?fresh=1'))[1]
+  const wt = withWt.find((r) => r.worktreeOf === 'app')
+  check('lista el worktree debajo de su repo', wt?.branch === 'rama-real' && wt.key === join(tmp, 'wt-real'))
+  check('el worktree hereda las reglas de su repo', wt?.base === 'master' && wt.deploys === true)
+  check('borra un worktree con el comando configurado', (await call('/api/run', { repo: wt.key, command: 'wt-remove' }))[0] === 200 && opened.at(-1).command === `git wt -d ${shellQuote(repo)} 'rama-real'`)
+  writeFileSync(join(repo, '.git', 'MERGE_HEAD'), 'x')
+  check('ofrece continuar con un merge frenado', (await call('/api/repos?fresh=1'))[1][0].commands.some((c) => c.label === 'Continuar'))
+  rmSync(join(repo, '.git', 'MERGE_HEAD'))
 } finally {
   close()
 }

@@ -52,6 +52,21 @@ Cada regla se aplica con `path` (ese repo) o `under` (todo lo que esté adentro)
 
 La protección es de esta app: no frena un `git push` hecho desde la terminal.
 
+## Comandos propios
+
+Podés agregar botones que abren una terminal de Orca en el repo y corren tus comandos. Se configuran en `policy.json`; sin eso no aparece ninguno.
+
+| Campo | Efecto |
+| --- | --- |
+| `label`, `run` | Texto del botón y comando a correr |
+| `under` | Solo para los repos dentro de esa carpeta |
+| `when: "merging"` | Solo con un merge o cherry-pick frenado |
+| `warn: true` | Pide confirmación en repos con regla `bases` |
+
+Con `"terminal": "floating"`, los comandos corren en la terminal flotante de Orca si está esperando un comando. Si no, o si tiene un programa abierto, se abre una pestaña nueva.
+
+`worktrees` define `create` y `remove`, con `{repo}`, `{path}` y `{branch}` como variables. Los comandos corren con tus permisos, y la protección de ramas de la app no los alcanza.
+
 ## Secretos
 
 Antes de agregar archivos como `.env`, `*.pem` o `credentials`, la app pide confirmación. Agregar todo ofrece dejarlos afuera. Antes de cada push muestra el remoto y los commits, y avisa si tocan archivos así.

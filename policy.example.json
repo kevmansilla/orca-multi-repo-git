@@ -1,8 +1,40 @@
 {
-  "exclude": ["carpeta-que-no-quiero-ver"],
+  "exclude": [
+    "carpeta-que-no-quiero-ver"
+  ],
   "rules": [
-    { "path": "~/proyectos/personal", "free": true },
-    { "under": "~/trabajo", "protected": ["main", "release"], "base": "develop" },
-    { "under": "~/cliente", "bases": "~/cliente/bases.json" }
-  ]
+    {
+      "path": "~/proyectos/personal",
+      "free": true
+    },
+    {
+      "under": "~/trabajo",
+      "protected": [
+        "main",
+        "release"
+      ],
+      "base": "develop"
+    },
+    {
+      "under": "~/cliente",
+      "bases": "~/cliente/bases.json"
+    }
+  ],
+  "commands": [
+    {
+      "label": "Mergear",
+      "run": "git mi-merge",
+      "warn": true
+    },
+    {
+      "label": "Continuar merge",
+      "run": "git mi-merge --continue",
+      "when": "merging"
+    }
+  ],
+  "worktrees": {
+    "under": "~/trabajo",
+    "create": "git mi-worktree {repo} {branch}",
+    "remove": "git mi-worktree -d {repo} {branch}"
+  }
 }
