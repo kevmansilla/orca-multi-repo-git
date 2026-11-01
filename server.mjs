@@ -1,0 +1,436 @@
+// App local de Source Control. Escucha solo en 127.0.0.1, exige un token que cambia en cada arranque
+// y nunca commitea ni pushea en una rama desplegada.
+import { spawn } from 'node:child_process'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { homedir } from 'node:os'
+import { basename, join, sep } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { fileURLToPath } from 'node:url'
+
+const HOME = homedir()
+const INDEX = fileURLToPath(new URL('./index.html', import.meta.url))
+const POLICY_FILE = process.env.MRG_POLICY_FILE ?? join(HOME, '.config/orca-multi-repo-git/policy.json')
+const REPOS_FILE = process.env.MRG_REPOS_FILE
+const ORCA_DIRS = [join(HOME, '.config/orca'), join(HOME, 'Library/Application Support/orca'), join(HOME, 'AppData/Roaming/orca')]
+const DEFAULT_PROTECTED = ['main', 'master']
+const REMOTE_HEAD_MS = 60_000
+const MAX_BODY = 64 * 1024
+const MAX_DIFF = 400_000
+const READ_MS = 20_000
+const WRITE_MS = 120_000
+const HASH_RE = /^[0-9a-f]{4,40}$/
+
+const READ_ENV = {
+  ...process.env,
+  GIT_OPTIONAL_LOCKS: '0',
+  GIT_PAGER: 'cat',
+  LC_ALL: 'C',
+  GIT_TERMINAL_PROMPT: '0',
+  // Sin terminal, una clave con passphrase colgaría a ssh hasta el timeout.
+  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes'
+}
+const WRITE_ENV = { ...READ_ENV, GIT_OPTIONAL_LOCKS: '1' }
+
+class ActionError extends Error {}
+
+function run(args, { env = READ_ENV, timeout = READ_MS, input = null, check = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const out = []
+    const err = []
+    const timer = setTimeout(() => child.kill('SIGTERM'), timeout)
+    child.stdout.on('data', (d) => out.push(d))
+    child.stderr.on('data', (d) => err.push(d))
+    child.on('error', (e) => {
+      clearTimeout(timer)
+      reject(new ActionError(`No se pudo ejecutar git: ${e.message}`))
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      const stdout = Buffer.concat(out).toString('utf8')
+      if (code !== 0 && check) {
+        const text = Buffer.concat(err).toString('utf8') || stdout
+        return reject(new ActionError(text.trim().slice(-1500) || 'git falló'))
+      }
+      resolve({ stdout, code })
+    })
+    child.stdin.end(input ?? undefined)
+  })
+}
+
+const git = async (path, ...args) => (await run(['-C', path, ...args])).stdout
+const gitChecked = async (path, ...args) => (await run(['-C', path, ...args], { check: true })).stdout
+const write = (path, args, input) => run(['-C', path, ...args], { env: WRITE_ENV, timeout: WRITE_MS, input, check: true })
+
+function orcaProfileDirs(dir) {
+  const profiles = join(dir, 'profiles')
+  if (!existsSync(profiles)) return []
+  try {
+    const { activeProfileId } = JSON.parse(readFileSync(join(dir, 'orca-profile-index.json'), 'utf8'))
+    if (activeProfileId && existsSync(join(profiles, activeProfileId))) return [join(profiles, activeProfileId)]
+  } catch {
+    // Sin índice legible se usa el perfil más reciente de abajo.
+  }
+  return readdirSync(profiles).map((name) => join(profiles, name))
+}
+
+function readLiveState(dir) {
+  // Es la base viva de Orca: orca-data.json solo se exporta al abrir la app y deja afuera los cambios recientes.
+  const db = new DatabaseSync(join(dir, 'profile-state.db'), { readOnly: true })
+  try {
+    const rows = db.prepare("select domain, payload from profile_state_documents where domain in ('repos', 'projectGroups')").all()
+    const docs = Object.fromEntries(rows.map((r) => [r.domain, JSON.parse(r.payload)]))
+    return Array.isArray(docs.repos) ? docs : null
+  } finally {
+    db.close()
+  }
+}
+
+function orcaData() {
+  const dirs = ORCA_DIRS.flatMap(orcaProfileDirs)
+  for (const dir of dirs) {
+    try {
+      const live = readLiveState(dir)
+      if (live) return live
+    } catch {
+      // El formato de esa base es interno de Orca: si cambia, queda el export en JSON.
+    }
+  }
+  const files = dirs.map((d) => join(d, 'orca-data.json'))
+  const found = files.filter(existsSync).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  if (!found.length) throw new ActionError('No encontré los datos de Orca.')
+  return JSON.parse(readFileSync(found[0], 'utf8'))
+}
+
+function isRepo(path) {
+  return existsSync(join(path, '.git'))
+}
+
+function nestedRepos(folder) {
+  // Un proyecto de tipo carpeta puede contener varios repos, un nivel abajo.
+  return readdirSync(folder, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && isRepo(join(folder, e.name)))
+    .map((e) => join(folder, e.name))
+    .sort((a, b) => a.localeCompare(b))
+}
+
+function listRepos() {
+  if (REPOS_FILE) {
+    return JSON.parse(readFileSync(REPOS_FILE, 'utf8')).map((r) => ({ key: r.name, name: r.name, path: r.path, group: '' }))
+  }
+  const data = orcaData()
+  const groups = new Map((data.projectGroups ?? []).map((g) => [g.id, g]))
+  const rank = (r) => [groups.get(r.projectGroupId)?.tabOrder ?? groups.size, r.projectGroupOrder ?? 0]
+  const sorted = [...(data.repos ?? [])].sort((a, b) => {
+    const [x, y] = [rank(a), rank(b)]
+    return x[0] - y[0] || x[1] - y[1] || (a.displayName ?? '').localeCompare(b.displayName ?? '')
+  })
+  const { exclude } = readPolicy()
+  const found = []
+  for (const repo of sorted) {
+    const path = (repo.path ?? '').replace(/\/+$/, '')
+    if (!path || path.split(sep).some((part) => exclude.includes(part)) || !existsSync(path)) continue
+    const group = groups.get(repo.projectGroupId)?.name ?? 'Sin grupo'
+    if (isRepo(path)) found.push({ key: path, name: repo.displayName || basename(path), path, group })
+    else {
+      const nested = nestedRepos(path)
+      for (const p of nested) found.push({ key: p, name: basename(p), path: p, group })
+      if (!nested.length) found.push({ key: path, name: repo.displayName || basename(path), path, group, plain: true })
+    }
+  }
+  return found
+}
+
+const expandHome = (path) => path.replace(/^~(?=\/|$)/, HOME)
+
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+// Las reglas solo existen para aflojar o ajustar lo protegido, y son de cada máquina.
+// Sin archivo, o con uno ilegible, rige la protección por defecto, que es la más estricta.
+function readPolicy() {
+  const data = readJson(POLICY_FILE)
+  const rules = (Array.isArray(data?.rules) ? data.rules : []).map((r) => ({
+    ...r,
+    path: r.path && expandHome(r.path),
+    under: r.under && expandHome(r.under),
+    bases: r.bases && expandHome(r.bases)
+  }))
+  return { rules, exclude: Array.isArray(data?.exclude) ? data.exclude : [] }
+}
+
+const remoteHeads = new Map()
+
+async function remoteDefault(path) {
+  const known = remoteHeads.get(path)
+  if (known && Date.now() - known.at < REMOTE_HEAD_MS) return known.branch
+  const head = (await git(path, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')).trim()
+  const branch = head.split('/').slice(1).join('/') || null
+  remoteHeads.set(path, { branch, at: Date.now() })
+  return branch
+}
+
+async function policy(path) {
+  const remote = await remoteDefault(path)
+  const strict = { blocked: new Set([...DEFAULT_PROTECTED, ...(remote ? [remote] : [])]), base: remote ?? 'main' }
+  const rule = readPolicy().rules.find((r) => r.path === path || (r.under && path.startsWith(r.under + sep)))
+  if (!rule) return strict
+  if (rule.free) return { blocked: new Set(), base: strict.base }
+  if (rule.bases) {
+    const data = readJson(rule.bases)
+    if (!data) return strict
+    const name = basename(path)
+    const base = data.repos?.[name] ?? data.default ?? strict.base
+    if (data.git_libre?.includes(name)) return { blocked: new Set(), base }
+    return { blocked: new Set([base, data.diagnostico?.[name] ?? base]), base }
+  }
+  return { blocked: new Set(rule.protected ?? strict.blocked), base: rule.base ?? strict.base }
+}
+
+function afterSpaces(line, count) {
+  let index = -1
+  for (let i = 0; i < count; i++) index = line.indexOf(' ', index + 1)
+  return line.slice(index + 1)
+}
+
+function parseStatus(raw) {
+  const head = {}
+  const staged = []
+  const changes = []
+  const fields = raw.split('\0')
+  for (let i = 0; i < fields.length; i++) {
+    const line = fields[i]
+    if (line.startsWith('# ')) {
+      const space = line.indexOf(' ', 2)
+      head[line.slice(2, space)] = line.slice(space + 1)
+    } else if (line.startsWith('? ')) {
+      changes.push({ s: 'U', p: line.slice(2), new: true })
+    } else if (line.startsWith('u ')) {
+      changes.push({ s: '!', p: afterSpaces(line, 10) })
+    } else if (line.startsWith('1 ') || line.startsWith('2 ')) {
+      const path = afterSpaces(line, line[0] === '1' ? 8 : 9)
+      if (line[0] === '2') i++ // el campo siguiente es la ruta vieja del rename
+      if (line[2] !== '.') staged.push({ s: line[2], p: path })
+      if (line[3] !== '.') changes.push({ s: line[3], p: path })
+    }
+  }
+  return { head, staged, changes }
+}
+
+const status = async (path) => parseStatus(await git(path, 'status', '--porcelain=v2', '--branch', '-z'))
+
+async function summary(item) {
+  if (item.plain) return { key: item.key, name: item.name, group: item.group, plain: true, staged: [], changes: [] }
+  const { head, staged, changes } = await status(item.path)
+  const { blocked, base } = await policy(item.path)
+  const [ahead = '+0', behind = '-0'] = (head['branch.ab'] ?? '').split(' ')
+  const branch = head['branch.head'] ?? '?'
+  return {
+    key: item.key, name: item.name, group: item.group, branch, base,
+    detached: branch === '(detached)', upstream: head['branch.upstream'] ?? null,
+    ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch), staged, changes
+  }
+}
+
+async function history(path) {
+  const out = await git(path, 'log', '-200', '--format=%h%x1f%an%x1f%ar%x1f%D%x1f%s%x1e')
+  return out.split('\x1e').flatMap((rec) => {
+    const p = rec.replace(/^\n/, '').split('\x1f')
+    return p.length === 5 ? [{ h: p[0], a: p[1], w: p[2], r: p[3], t: p[4] }] : []
+  })
+}
+
+async function branches(path) {
+  const out = await git(path, 'for-each-ref', '--sort=-committerdate', '--format=%(refname)\t%(committerdate:relative)', 'refs/heads', 'refs/remotes')
+  const local = []
+  const remote = []
+  for (const line of out.split('\n')) {
+    const [ref, when] = line.split('\t')
+    if (ref?.startsWith('refs/heads/')) local.push({ n: ref.slice(11), w: when })
+    else if (ref?.startsWith('refs/remotes/') && !ref.endsWith('/HEAD')) remote.push({ n: ref.slice(13), w: when })
+  }
+  const names = new Set(local.map((b) => b.n))
+  return { local, remote: remote.filter((b) => !names.has(b.n.split('/').slice(1).join('/'))) }
+}
+
+async function changedFile(path, rel) {
+  const { staged, changes } = await status(path)
+  const file = [...staged, ...changes].find((f) => f.p === rel)
+  if (!file) throw new ActionError('Ese archivo ya no figura como cambiado.')
+  return { isNew: changes.some((f) => f.p === rel && f.new) }
+}
+
+async function fileDiff(path, rel, isStaged) {
+  const { isNew } = await changedFile(path, rel)
+  if (!isStaged && isNew) return (await git(path, 'diff', '--no-index', '--', '/dev/null', rel)).slice(0, MAX_DIFF)
+  return (await git(path, 'diff', ...(isStaged ? ['--cached'] : []), '--', rel)).slice(0, MAX_DIFF)
+}
+
+async function act(item, body) {
+  const { path } = item
+  const state = await summary(item)
+  const locked = state.protected || state.detached
+  switch (body.action) {
+    case 'stage':
+      await changedFile(path, body.path)
+      return write(path, ['add', '--', body.path])
+    case 'unstage':
+      await changedFile(path, body.path)
+      return write(path, ['restore', '--staged', '--', body.path])
+    case 'stage_all':
+      return write(path, ['add', '-A'])
+    case 'unstage_all':
+      return write(path, ['restore', '--staged', '--', '.'])
+    case 'commit': {
+      const message = String(body.message ?? '').trim()
+      if (locked) throw new ActionError(`No se commitea en ${state.branch}: creá una rama desde origin/${state.base}.`)
+      if (!state.staged.length) throw new ActionError('No hay archivos en Staged.')
+      if (!message) throw new ActionError('Falta el mensaje.')
+      return write(path, ['commit', '-F', '-'], message)
+    }
+    case 'switch': {
+      const known = await branches(path)
+      if (known.local.some((b) => b.n === body.branch)) return write(path, ['switch', body.branch])
+      if (known.remote.some((b) => b.n === body.branch)) return write(path, ['switch', '--track', body.branch])
+      throw new ActionError('Esa rama no existe.')
+    }
+    case 'create_branch': {
+      const wanted = String(body.branch ?? '').trim()
+      const valid = await run(['check-ref-format', '--branch', wanted])
+      if (valid.code !== 0 || wanted.startsWith('-')) throw new ActionError('Nombre de rama inválido.')
+      await write(path, ['fetch', 'origin', state.base])
+      return write(path, ['switch', '-c', wanted, '--no-track', `origin/${state.base}`])
+    }
+    case 'fetch':
+      return write(path, ['fetch', '--prune', 'origin'])
+    case 'pull':
+      return write(path, ['pull', '--ff-only'])
+    case 'push':
+      if (locked) throw new ActionError(`No se pushea ${state.branch}.`)
+      return write(path, ['push', '-u', 'origin', 'HEAD'])
+    default:
+      throw new ActionError('Acción desconocida.')
+  }
+}
+
+function sameToken(given, token) {
+  const a = Buffer.from(String(given ?? ''))
+  const b = Buffer.from(token)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (d) => {
+      size += d.length
+      if (size > MAX_BODY) reject(new ActionError('Pedido demasiado grande.'))
+      else chunks.push(d)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
+  const token = process.env.MRG_TOKEN ?? randomBytes(32).toString('base64url')
+  const queues = new Map()
+  let lastUse = Date.now()
+
+  // Dos acciones sobre un mismo repo se pisarían en el index de git.
+  function inOrder(key, task) {
+    const next = (queues.get(key) ?? Promise.resolve()).catch(() => {}).then(task)
+    queues.set(key, next)
+    return next
+  }
+
+  function reply(res, code, body, type = 'application/json') {
+    const data = Buffer.isBuffer(body) || typeof body === 'string' ? body : JSON.stringify(body)
+    res.writeHead(code, {
+      'Content-Type': type,
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    })
+    res.end(data)
+  }
+
+  function repoOf(key) {
+    const item = listRepos().find((r) => r.key === key)
+    if (!item || item.plain) throw new ActionError('Repo desconocido.')
+    return item
+  }
+
+  async function get(req, res, url, allowedHost) {
+    const q = url.searchParams
+    if (url.pathname === '/') {
+      if (!allowedHost || !sameToken(q.get('t'), token)) return reply(res, 403, 'Falta el token', 'text/plain')
+      lastUse = Date.now()
+      return reply(res, 200, readFileSync(INDEX), 'text/html; charset=utf-8')
+    }
+    if (!allowedHost || !sameToken(req.headers['x-token'], token)) return reply(res, 403, { error: 'token' })
+    lastUse = Date.now()
+    if (url.pathname === '/api/ping') return reply(res, 200, { ok: true })
+    if (url.pathname === '/api/repos') {
+      const items = []
+      for (const r of listRepos()) items.push(await summary(r))
+      return reply(res, 200, items)
+    }
+    const { path } = repoOf(q.get('repo'))
+    if (url.pathname === '/api/history') return reply(res, 200, await history(path))
+    if (url.pathname === '/api/branches') return reply(res, 200, await branches(path))
+    if (url.pathname === '/api/diff') return reply(res, 200, { diff: await fileDiff(path, q.get('path'), q.get('staged') === '1') })
+    if (url.pathname === '/api/commit') {
+      const hash = q.get('h') ?? ''
+      if (!HASH_RE.test(hash)) throw new ActionError('Commit inválido.')
+      return reply(res, 200, { diff: (await gitChecked(path, 'show', '--stat', '--patch', hash)).slice(0, MAX_DIFF) })
+    }
+    return reply(res, 404, { error: 'no existe' })
+  }
+
+  async function post(req, res, allowedHost) {
+    if (!allowedHost || !sameToken(req.headers['x-token'], token)) return reply(res, 403, { error: 'token' })
+    lastUse = Date.now()
+    if (req.headers['content-type'] !== 'application/json') throw new ActionError('Pedido inválido.')
+    let body
+    try {
+      body = JSON.parse(await readBody(req))
+    } catch (e) {
+      throw e instanceof ActionError ? e : new ActionError('Pedido inválido.')
+    }
+    const item = repoOf(body.repo)
+    await inOrder(item.key, () => act(item, body))
+    return reply(res, 200, { ok: true })
+  }
+
+  return new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      const url = new URL(req.url, 'http://127.0.0.1')
+      const { port: actual } = server.address()
+      const allowedHost = [`127.0.0.1:${actual}`, `localhost:${actual}`].includes(req.headers.host)
+      const handler = req.method === 'POST' ? post(req, res, allowedHost) : get(req, res, url, allowedHost)
+      handler.catch((e) => {
+        if (res.headersSent) return
+        if (e instanceof ActionError) reply(res, 400, { error: e.message })
+        else reply(res, 500, { error: 'Error interno' })
+      })
+    })
+    server.on('error', reject)
+    if (idleMs > 0) {
+      setInterval(() => {
+        if (Date.now() - lastUse > idleMs) onIdle?.()
+      }, Math.min(idleMs, 30_000)).unref()
+    }
+    server.listen(port, '127.0.0.1', () => resolve({ port: server.address().port, token, close: () => server.close() }))
+  })
+}

@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "multi-repo-git",
+  "publisher": "kevin",
+  "name": "Multi Repo Git",
+  "version": "0.2.0",
+  "description": "Source Control de todos los repos de Orca: cambios, commits, ramas e historial. Abrilo con el comando Source Control: Abrir.",
+  "engines": { "orca": ">=1.4.245" },
+  "pluginApi": 1,
+  "main": "main.mjs",
+  "contributes": {
+    "commands": [{ "id": "open", "title": "Source Control: Abrir" }],
+    "keybindings": [{ "command": "open", "key": "Mod+Alt+Shift+G" }]
+  },
+  "capabilities": [{ "kind": "notifications:show" }]
+}

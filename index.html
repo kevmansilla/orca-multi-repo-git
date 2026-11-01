@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Source Control</title>
+<style>
+  /* Tokens tomados del tema de Orca, para que la pestaña se sienta parte de la app. */
+  :root {
+    color-scheme: dark;
+    --bg:#1e1e1e; --side:#212121; --raised:#2a2a2a; --hover:#ffffff0d; --active:#ffffff14;
+    --line:#ffffff12; --input:#ffffff26; --fg:#fafafa; --soft:#d4d4d4; --muted:#a1a1a1; --faint:#737373;
+    --primary:#e5e5e5; --on-primary:#171717;
+    --add:#4ade80; --del:#f87171; --warn:#fbbf24; --info:#93c5fd;
+    --add-bg:#4ade8014; --del-bg:#f8717114;
+    --sans:"Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono:"SF Mono",SFMono-Regular,ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg:#fff; --side:#fafafa; --raised:#fff; --hover:#0000000a; --active:#00000012;
+      --line:#e5e5e5; --input:#e5e5e5; --fg:#0a0a0a; --soft:#262626; --muted:#737373; --faint:#a3a3a3;
+      --primary:#171717; --on-primary:#fafafa;
+      --add:#16a34a; --del:#dc2626; --warn:#b45309; --info:#2563eb;
+      --add-bg:#16a34a14; --del-bg:#dc262614;
+    }
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; display:flex; background:var(--bg); color:var(--soft); font:13px/1.45 var(--sans); -webkit-font-smoothing:antialiased; }
+  button { font:inherit; color:inherit; }
+  svg { display:block; flex:none; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:var(--active); border-radius:4px; }
+  ::-webkit-scrollbar-track { background:none; }
+
+  #side { width:340px; flex:none; display:flex; flex-direction:column; min-height:0; background:var(--side); border-right:1px solid var(--line); }
+  #top { padding:10px 10px 8px; }
+  #find { height:30px; padding:0 10px; }
+  #list { flex:1; min-height:0; overflow-y:auto; padding:0 6px 10px; }
+  #empty { padding:24px 10px; color:var(--faint); text-align:center; }
+
+  #main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  #bar { height:38px; flex:none; display:flex; align-items:center; gap:6px; padding:0 12px; border-bottom:1px solid var(--line); }
+  #back { display:none; }
+  #title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--muted); }
+  #diff { flex:1; min-height:0; margin:0; padding:6px 0; overflow:auto; font:12px/1.6 var(--mono); }
+  #diff div { padding:0 14px; white-space:pre; min-width:max-content; }
+  #blank { flex:1; display:flex; align-items:center; justify-content:center; color:var(--faint); }
+  .add { color:var(--add); background:var(--add-bg); }
+  .del { color:var(--del); background:var(--del-bg); }
+  .hunk { color:var(--info); }
+  .meta-line { color:var(--faint); }
+
+  .space { display:flex; align-items:center; gap:6px; height:28px; margin-top:6px; padding:0 8px; border-radius:6px; font-size:12px; font-weight:500; color:var(--muted); cursor:pointer; user-select:none; }
+  .space:hover { background:var(--hover); }
+  .space b { font-weight:500; color:var(--soft); }
+  .repo { display:flex; align-items:center; gap:6px; height:30px; padding:0 6px 0 8px; border-radius:6px; cursor:pointer; user-select:none; }
+  .repo:hover, .repo.open { background:var(--hover); }
+  .repo.plain { padding-left:26px; cursor:default; }
+  .repo.plain:hover { background:none; }
+  .repo.plain .name { color:var(--faint); font-weight:400; }
+  .repo.plain .count { display:block; color:var(--faint); }
+  .name { flex:none; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; color:var(--fg); }
+  .branch { display:flex; align-items:center; gap:4px; min-width:0; padding:1px 5px; border:0; border-radius:5px; background:none; color:var(--muted); font-size:12px; cursor:pointer; }
+  .branch:hover { background:var(--active); color:var(--fg); }
+  .branch span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .branch.locked { color:var(--faint); }
+  .grow { flex:1; min-width:0; }
+  .count { flex:none; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .count.dirty { color:var(--warn); }
+  .tools { display:none; flex:none; gap:1px; }
+  .repo:hover .tools, .repo:focus-within .tools { display:flex; }
+  .repo:hover .count { display:none; }
+  .icon { width:24px; height:24px; flex:none; display:flex; align-items:center; justify-content:center; padding:0; border:0; border-radius:5px; background:none; color:var(--muted); cursor:pointer; }
+  .icon:hover { background:var(--active); color:var(--fg); }
+  .chev { color:var(--faint); transition:transform .12s; }
+  .chev.down { transform:rotate(90deg); }
+
+  .body { padding:8px 6px 10px 22px; }
+  .seg { display:flex; gap:2px; padding:2px; margin-bottom:8px; border-radius:7px; background:var(--hover); }
+  .seg button { flex:1; height:24px; border:0; border-radius:5px; background:none; color:var(--muted); font-size:12px; cursor:pointer; }
+  .seg button.on { background:var(--active); color:var(--fg); }
+  textarea, input { width:100%; display:block; background:var(--hover); color:var(--fg); border:1px solid var(--line); border-radius:7px; outline:0; font:inherit; }
+  textarea { padding:7px 9px; resize:vertical; }
+  textarea:focus, input:focus { border-color:var(--input); }
+  ::placeholder { color:var(--faint); }
+  .commit { width:100%; height:28px; margin:6px 0 2px; border:0; border-radius:7px; background:var(--primary); color:var(--on-primary); font-size:12px; font-weight:500; cursor:pointer; }
+  .commit:disabled { background:var(--hover); color:var(--faint); cursor:not-allowed; }
+  .note { margin:6px 0 2px; font-size:12px; color:var(--muted); }
+  .group { display:flex; align-items:center; height:24px; margin-top:8px; font-size:11px; font-weight:500; color:var(--faint); }
+  .row { display:flex; align-items:center; gap:6px; height:24px; padding:0 2px 0 6px; border-radius:5px; cursor:pointer; }
+  .row:hover { background:var(--hover); }
+  .row.on { background:var(--active); }
+  .row .icon { visibility:hidden; width:20px; height:20px; }
+  .row:hover .icon { visibility:visible; }
+  .path { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+  .st { width:12px; flex:none; font:600 11px var(--mono); color:var(--warn); }
+  .st.A, .st.U { color:var(--add); } .st.D { color:var(--del); }
+  .log { padding:4px 6px; border-radius:5px; cursor:pointer; }
+  .log:hover { background:var(--hover); }
+  .log div { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .meta { font-size:11px; color:var(--faint); }
+
+  #toast { position:fixed; right:14px; bottom:14px; max-width:420px; padding:9px 12px; border:1px solid var(--line); border-radius:8px; background:var(--raised); color:var(--fg); font-size:12px; white-space:pre-wrap; display:none; cursor:pointer; box-shadow:0 8px 24px #0006; }
+  #toast.bad { border-color:var(--del); }
+  #modal { position:fixed; inset:0; display:none; justify-content:center; align-items:flex-start; padding-top:12vh; background:#0006; }
+  #box { width:480px; max-width:calc(100% - 24px); max-height:60vh; display:flex; flex-direction:column; overflow:hidden; background:var(--raised); border:1px solid var(--line); border-radius:10px; box-shadow:0 16px 48px #0008; }
+  #box input { height:40px; padding:0 12px; border:0; border-bottom:1px solid var(--line); border-radius:0; background:none; }
+  #box .list { overflow:auto; padding:4px; }
+  .opt { display:flex; gap:10px; align-items:center; min-height:30px; padding:3px 8px; border-radius:6px; cursor:pointer; }
+  .opt:hover { background:var(--hover); }
+  .opt span:first-child { flex:1; min-width:0; overflow-wrap:anywhere; color:var(--fg); }
+
+  /* En una vista dividida no entran las dos columnas: el diff pasa a ocupar la lista. */
+  @media (max-width:760px) {
+    #side { width:100%; border-right:0; }
+    #main { display:none; }
+    body.detail #side { display:none; }
+    body.detail #main { display:flex; }
+    #back { display:flex; }
+  }
+</style>
+</head>
+<body>
+<aside id="side">
+  <div id="top"><input id="find" placeholder="Buscar repos" aria-label="Buscar repos" /></div>
+  <div id="list"></div>
+</aside>
+<main id="main">
+  <div id="bar"><button id="back" class="icon" title="Volver"></button><span id="title"></span></div>
+  <div id="blank">Elegí un archivo o un commit</div>
+  <pre id="diff" hidden></pre>
+</main>
+<div id="toast"></div>
+<div id="modal"><div id="box"></div></div>
+<script>
+(function () {
+'use strict'
+var TOKEN = new URLSearchParams(location.search).get('t')
+var data = []
+var snapshot = ''
+var expanded = {}
+var tab = {}
+var drafts = {}
+var logs = {}
+var selected = ''
+var closedSpaces = readClosed()
+var list = document.getElementById('list')
+var find = document.getElementById('find')
+
+var ICONS = {
+  chevron: '<path d="m9 18 6-6-6-6"/>',
+  branch: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  lock: '<rect width="16" height="11" x="4" y="11" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  fetch: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  pull: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  push: '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  minus: '<path d="M5 12h14"/>',
+  back: '<path d="m15 18-6-6 6-6"/>'
+}
+function svg(name, size) {
+  var wrap = document.createElement('span')
+  var s = size || 14
+  wrap.innerHTML = '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[name] + '</svg>'
+  return wrap.firstChild
+}
+function readClosed() {
+  try {
+    return JSON.parse(localStorage.getItem('closedSpaces')) || {}
+  } catch (e) {
+    return {} // sin almacenamiento, todos los grupos arrancan abiertos
+  }
+}
+function saveClosed() {
+  try {
+    localStorage.setItem('closedSpaces', JSON.stringify(closedSpaces))
+  } catch (e) {
+    // Es solo una comodidad de esta pestaña: si no se guarda, no se pierde nada.
+  }
+}
+function el(tag, cls, text) {
+  var n = document.createElement(tag)
+  if (cls) n.className = cls
+  if (text !== undefined) n.textContent = text
+  return n
+}
+function reply(r) {
+  return r.json().then(function (j) {
+    if (!r.ok) throw new Error(j.error || 'Error')
+    return j
+  })
+}
+function api(path) {
+  return fetch(path, { headers: { 'X-Token': TOKEN } }).then(reply)
+}
+function toast(text, ok) {
+  var t = document.getElementById('toast')
+  t.textContent = text
+  t.className = ok ? '' : 'bad'
+  t.style.display = 'block'
+  if (ok) setTimeout(function () { t.style.display = 'none' }, 2500)
+}
+document.getElementById('toast').onclick = function () { this.style.display = 'none' }
+function act(repo, action, extra, okText) {
+  var body = Object.assign({ repo: repo, action: action }, extra || {})
+  return fetch('/api/action', {
+    method: 'POST',
+    headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(reply).then(function () {
+    if (okText) toast(okText, true)
+    delete logs[repo]
+    return load(true)
+  }).catch(function (e) { toast(e.message) })
+}
+function showDiff(title, text) {
+  document.getElementById('title').textContent = title
+  document.getElementById('blank').hidden = true
+  document.getElementById('blank').style.display = 'none'
+  var pre = document.getElementById('diff')
+  pre.hidden = false
+  pre.textContent = ''
+  text.split('\n').forEach(function (line) {
+    var cls = /^\+(?!\+\+)/.test(line) ? 'add' : /^-(?!--)/.test(line) ? 'del' : /^@@/.test(line) ? 'hunk' : /^(diff |index |\+\+\+|---)/.test(line) ? 'meta-line' : ''
+    pre.appendChild(el('div', cls, line || ' '))
+  })
+  pre.scrollTop = 0
+  document.body.classList.add('detail')
+}
+document.getElementById('back').appendChild(svg('back'))
+document.getElementById('back').onclick = function () { document.body.classList.remove('detail') }
+function openFile(r, f, staged) {
+  selected = r.key + '|' + staged + '|' + f.p
+  render()
+  var q = '/api/diff?repo=' + encodeURIComponent(r.key) + '&path=' + encodeURIComponent(f.p) + '&staged=' + (staged ? 1 : 0)
+  api(q).then(function (j) { showDiff(r.name + ' · ' + f.p, j.diff || 'Sin diferencias de texto') }).catch(function (e) { toast(e.message) })
+}
+function iconBtn(name, title, fn) {
+  var b = el('button', 'icon')
+  b.title = title
+  b.setAttribute('aria-label', title)
+  b.appendChild(svg(name))
+  b.onclick = function (e) { e.stopPropagation(); fn() }
+  return b
+}
+function fileRow(r, f, staged) {
+  var row = el('div', 'row' + (selected === r.key + '|' + staged + '|' + f.p ? ' on' : ''))
+  row.appendChild(el('span', 'st ' + f.s, f.s))
+  var p = el('span', 'path', f.p)
+  p.title = f.p
+  row.appendChild(p)
+  row.onclick = function () { openFile(r, f, staged) }
+  row.appendChild(iconBtn(staged ? 'minus' : 'plus', staged ? 'Sacar de Staged' : 'Pasar a Staged', function () {
+    act(r.key, staged ? 'unstage' : 'stage', { path: f.p })
+  }))
+  return row
+}
+function group(r, label, files, staged, wrap) {
+  if (!files.length) return
+  var g = el('div', 'group')
+  g.appendChild(el('span', 'grow', label + ' · ' + files.length))
+  g.appendChild(iconBtn(staged ? 'minus' : 'plus', staged ? 'Sacar todo de Staged' : 'Pasar todo a Staged', function () {
+    act(r.key, staged ? 'unstage_all' : 'stage_all')
+  }))
+  wrap.appendChild(g)
+  files.forEach(function (f) { wrap.appendChild(fileRow(r, f, staged)) })
+}
+function changesView(r, wrap) {
+  var blocked = r.protected || r.detached
+  var box = el('textarea')
+  box.rows = 2
+  box.placeholder = 'Mensaje de commit'
+  box.value = drafts[r.key] || ''
+  box.oninput = function () { drafts[r.key] = box.value }
+  function commit() {
+    act(r.key, 'commit', { message: box.value }, 'Commit hecho').then(function () {
+      var now = data.find(function (x) { return x.key === r.key })
+      if (now && !now.staged.length) { drafts[r.key] = ''; render() }
+    })
+  }
+  box.onkeydown = function (e) { if (e.key === 'Enter' && e.ctrlKey && !blocked) commit() }
+  wrap.appendChild(box)
+  var btn = el('button', 'commit', 'Commit')
+  btn.disabled = blocked || !r.staged.length
+  btn.title = 'Ctrl+Enter'
+  btn.onclick = commit
+  wrap.appendChild(btn)
+  if (blocked) wrap.appendChild(el('div', 'note', r.detached ? 'HEAD suelto: cambiá a una rama para commitear.' : r.branch + ' está protegida. Creá una rama desde origin/' + r.base + ' tocando el nombre de la rama.'))
+  group(r, 'Staged', r.staged, true, wrap)
+  group(r, 'Cambios', r.changes, false, wrap)
+  if (!r.staged.length && !r.changes.length) wrap.appendChild(el('div', 'note', 'Sin cambios.'))
+}
+function historyView(r, wrap) {
+  if (!logs[r.key]) {
+    api('/api/history?repo=' + encodeURIComponent(r.key)).then(function (j) { logs[r.key] = j; render() }).catch(function (e) { toast(e.message) })
+    wrap.appendChild(el('div', 'meta', 'Cargando…'))
+    return
+  }
+  logs[r.key].forEach(function (c) {
+    var item = el('div', 'log')
+    item.appendChild(el('div', '', c.t))
+    item.appendChild(el('div', 'meta', c.h + ' · ' + c.a + ' · ' + c.w))
+    item.title = c.r || ''
+    item.onclick = function () {
+      api('/api/commit?repo=' + encodeURIComponent(r.key) + '&h=' + c.h).then(function (j) { showDiff(r.name + ' · ' + c.t, j.diff) }).catch(function (e) { toast(e.message) })
+    }
+    wrap.appendChild(item)
+  })
+}
+function closeModal() { document.getElementById('modal').style.display = 'none' }
+document.getElementById('modal').onclick = function (e) { if (e.target === this) closeModal() }
+function branchPicker(r) {
+  api('/api/branches?repo=' + encodeURIComponent(r.key)).then(function (j) {
+    var box = document.getElementById('box')
+    box.textContent = ''
+    var input = el('input')
+    input.placeholder = 'Buscar rama o escribir una nueva'
+    box.appendChild(input)
+    var options = el('div', 'list')
+    box.appendChild(options)
+    function option(text, meta, fn) {
+      var o = el('div', 'opt')
+      o.appendChild(el('span', '', text))
+      o.appendChild(el('span', 'meta', meta))
+      o.onclick = fn
+      options.appendChild(o)
+    }
+    function paint() {
+      var term = input.value.trim()
+      options.textContent = ''
+      if (term) option('Crear ' + term, 'desde origin/' + r.base, function () {
+        closeModal()
+        act(r.key, 'create_branch', { branch: term }, 'Rama ' + term + ' creada')
+      })
+      j.local.concat(j.remote).forEach(function (b) {
+        if (b.n.toLowerCase().indexOf(term.toLowerCase()) < 0 || b.n === r.branch) return
+        option(b.n, b.w, function () {
+          closeModal()
+          act(r.key, 'switch', { branch: b.n }, 'Ahora en ' + b.n)
+        })
+      })
+    }
+    input.oninput = paint
+    input.onkeydown = function (e) { if (e.key === 'Escape') closeModal() }
+    paint()
+    document.getElementById('modal').style.display = 'flex'
+    input.focus()
+  }).catch(function (e) { toast(e.message) })
+}
+function plainView(r) {
+  var row = el('div', 'repo plain')
+  row.title = 'Este proyecto de Orca no tiene un repo de git'
+  row.appendChild(el('span', 'name', r.name))
+  row.appendChild(el('span', 'grow'))
+  row.appendChild(el('span', 'count', 'sin git'))
+  return row
+}
+function repoView(r) {
+  if (r.plain) return plainView(r)
+  var wrap = el('section')
+  var open = !!expanded[r.key]
+  var h = el('div', 'repo' + (open ? ' open' : ''))
+  var chev = svg('chevron', 12)
+  chev.setAttribute('class', 'chev' + (open ? ' down' : ''))
+  h.appendChild(chev)
+  h.appendChild(el('span', 'name', r.name))
+  var chip = el('button', 'branch' + (r.protected ? ' locked' : ''))
+  chip.title = (r.protected ? 'Rama protegida. ' : '') + 'Cambiar de rama'
+  chip.appendChild(svg(r.protected ? 'lock' : 'branch', 12))
+  chip.appendChild(el('span', '', r.branch))
+  chip.onclick = function (e) { e.stopPropagation(); branchPicker(r) }
+  h.appendChild(chip)
+  h.appendChild(el('span', 'grow'))
+  var dirty = r.staged.length + r.changes.length
+  if (dirty) h.appendChild(el('span', 'count dirty', String(dirty)))
+  var sync = (r.ahead ? '↑' + r.ahead + ' ' : '') + (r.behind ? '↓' + r.behind : '')
+  if (sync) h.appendChild(el('span', 'count', sync.trim()))
+  var tools = el('span', 'tools')
+  tools.appendChild(iconBtn('fetch', 'Fetch', function () { act(r.key, 'fetch', null, 'Fetch listo') }))
+  tools.appendChild(iconBtn('pull', 'Pull (solo fast-forward)', function () { act(r.key, 'pull', null, 'Pull listo') }))
+  if (!r.protected) tools.appendChild(iconBtn('push', 'Push de esta rama', function () { act(r.key, 'push', null, 'Push listo') }))
+  h.appendChild(tools)
+  h.onclick = function () { expanded[r.key] = !expanded[r.key]; render() }
+  wrap.appendChild(h)
+  if (open) {
+    var body = el('div', 'body')
+    var seg = el('div', 'seg')
+    ;['Cambios', 'Historial'].forEach(function (name) {
+      var t = el('button', (tab[r.key] || 'Cambios') === name ? 'on' : '', name)
+      t.onclick = function () { tab[r.key] = name; render() }
+      seg.appendChild(t)
+    })
+    body.appendChild(seg)
+    if ((tab[r.key] || 'Cambios') === 'Cambios') changesView(r, body)
+    else historyView(r, body)
+    wrap.appendChild(body)
+  }
+  return wrap
+}
+function spaceView(name, repos, term) {
+  var closed = closedSpaces[name] && !term
+  var h = el('div', 'space')
+  var chev = svg('chevron', 12)
+  chev.setAttribute('class', 'chev' + (closed ? '' : ' down'))
+  h.appendChild(chev)
+  h.appendChild(el('b', 'grow', name))
+  var dirty = repos.reduce(function (n, r) { return n + (r.staged.length + r.changes.length ? 1 : 0) }, 0)
+  h.appendChild(el('span', 'count' + (dirty ? ' dirty' : ''), dirty ? dirty + ' con cambios' : String(repos.length)))
+  h.onclick = function () {
+    closedSpaces[name] = !closedSpaces[name]
+    saveClosed()
+    render()
+  }
+  list.appendChild(h)
+  if (!closed) repos.forEach(function (r) { list.appendChild(repoView(r)) })
+}
+function render() {
+  var top = list.scrollTop
+  var term = find.value.trim().toLowerCase()
+  var spaces = []
+  data.forEach(function (r) {
+    if (term && (r.name + ' ' + (r.branch || '')).toLowerCase().indexOf(term) < 0) return
+    var last = spaces[spaces.length - 1]
+    if (last && last.name === r.group) last.repos.push(r)
+    else spaces.push({ name: r.group, repos: [r] })
+  })
+  list.textContent = ''
+  spaces.forEach(function (s) { spaceView(s.name, s.repos, term) })
+  if (!spaces.length && snapshot) list.appendChild(el('div', '', '')).id = 'empty'
+  var none = document.getElementById('empty')
+  if (none) none.textContent = term ? 'Nada coincide.' : 'Orca no tiene proyectos.'
+  list.scrollTop = top
+}
+find.oninput = render
+function load(force) {
+  return api('/api/repos').then(function (j) {
+    var next = JSON.stringify(j)
+    var typing = document.activeElement && document.activeElement !== find && /TEXTAREA|INPUT/.test(document.activeElement.tagName)
+    if (next === snapshot && !force) return
+    data = j
+    snapshot = next
+    if (!typing || force) render()
+  }).catch(function (e) { toast(e.message) })
+}
+load(true)
+setInterval(function () { if (!document.hidden) load(false) }, 4000)
+// Mantiene vivo el servidor mientras la pestaña exista, aunque esté en segundo plano.
+setInterval(function () { fetch('/api/ping', { headers: { 'X-Token': TOKEN } }).catch(function () {}) }, 60000)
+})()
+</script>
+</body>
+</html>
