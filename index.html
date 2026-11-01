@@ -12,7 +12,7 @@
     --line:#ffffff12; --input:#ffffff26; --fg:#fafafa; --soft:#d4d4d4; --muted:#a1a1a1; --faint:#737373;
     --primary:#e5e5e5; --on-primary:#171717;
     --add:#4ade80; --del:#f87171; --warn:#fbbf24; --info:#93c5fd;
-    --add-bg:#4ade8014; --del-bg:#f8717114;
+    --add-bg:#4ade8014; --del-bg:#f8717114; --add-w:#4ade8040; --del-w:#f8717140;
     --sans:"Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
     --mono:"SF Mono",SFMono-Regular,ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
   }
@@ -23,7 +23,7 @@
       --line:#e5e5e5; --input:#e5e5e5; --fg:#0a0a0a; --soft:#262626; --muted:#737373; --faint:#a3a3a3;
       --primary:#171717; --on-primary:#fafafa;
       --add:#16a34a; --del:#dc2626; --warn:#b45309; --info:#2563eb;
-      --add-bg:#16a34a14; --del-bg:#dc262614;
+      --add-bg:#16a34a14; --del-bg:#dc262614; --add-w:#16a34a33; --del-w:#dc262633;
     }
   }
   * { box-sizing:border-box; }
@@ -38,6 +38,11 @@
   #side { width:340px; flex:none; display:flex; flex-direction:column; min-height:0; background:var(--side); border-right:1px solid var(--line); }
   #top { padding:10px 10px 8px; }
   #find { height:30px; padding:0 10px; }
+  #summary { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; min-height:22px; align-items:center; font-size:12px; color:var(--faint); }
+  #summary span { padding:0 2px; }
+  .chip { height:22px; padding:0 8px; border:0; border-radius:5px; background:var(--hover); color:var(--muted); font-size:12px; cursor:pointer; }
+  .chip:hover { color:var(--fg); }
+  .chip.on { background:var(--active); color:var(--fg); }
   #list { flex:1; min-height:0; overflow-y:auto; padding:0 6px 10px; }
   #empty { padding:24px 10px; color:var(--faint); text-align:center; }
 
@@ -50,6 +55,11 @@
   #blank { flex:1; display:flex; align-items:center; justify-content:center; color:var(--faint); }
   .add { color:var(--add); background:var(--add-bg); }
   .del { color:var(--del); background:var(--del-bg); }
+  .add .w { background:var(--add-w); border-radius:2px; }
+  .del .w { background:var(--del-w); border-radius:2px; }
+  #diff div.sb { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); padding:0; min-width:0; white-space:normal; }
+  .sb > span { min-width:0; padding:0 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .sb > span + span { border-left:1px solid var(--line); }
   .hunk { color:var(--info); }
   .meta-line { color:var(--faint); }
 
@@ -70,6 +80,7 @@
   .branch { display:flex; align-items:center; gap:4px; min-width:0; padding:1px 5px; border:0; border-radius:5px; background:none; color:var(--muted); font-size:12px; cursor:pointer; }
   .branch:hover { background:var(--active); color:var(--fg); }
   .branch span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .branch .tail { flex:none; margin-left:-4px; }
   .branch.locked { color:var(--faint); }
   .grow { flex:1; min-width:0; }
   .count { flex:none; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
@@ -91,6 +102,8 @@
   textarea:focus, input:focus { border-color:var(--input); }
   ::placeholder { color:var(--faint); }
   .commit { width:100%; height:28px; margin:6px 0 2px; border:0; border-radius:7px; background:var(--primary); color:var(--on-primary); font-size:12px; font-weight:500; cursor:pointer; }
+  .commit-row { display:flex; gap:6px; }
+  a.commit { display:flex; align-items:center; justify-content:center; text-decoration:none; }
   .commit:disabled { background:var(--hover); color:var(--faint); cursor:not-allowed; }
   .commit.ghost { background:none; border:1px solid var(--line); color:var(--soft); }
   .commit.ghost:hover { background:var(--hover); }
@@ -145,7 +158,7 @@
 </head>
 <body>
 <aside id="side">
-  <div id="top"><input id="find" placeholder="Buscar repos" aria-label="Buscar repos" /></div>
+  <div id="top"><input id="find" placeholder="Buscar repos" aria-label="Buscar repos" /><div id="summary"></div></div>
   <div id="list"></div>
 </aside>
 <main id="main">
@@ -168,6 +181,14 @@ var logs = {}
 var selected = ''
 var closedSpaces = readClosed()
 var OFFLINE_POLLS = 3
+var SPLIT_WIDTH = 900
+var MAX_WORD_DIFF = 2000
+var MIN_SAME_RATIO = 0.3
+var TAIL_CHARS = 12
+var SHORT_BRANCH = 24
+var filter = ''
+var lastDiff = null
+var splitShown = false
 var offline = 0
 var lostToast = false
 var list = document.getElementById('list')
@@ -183,6 +204,7 @@ var ICONS = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   minus: '<path d="M5 12h14"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
+  undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>'
 }
@@ -244,20 +266,93 @@ function act(repo, action, extra, okText) {
     else toast(e.message)
   })
 }
+// Marca solo lo que cambió dentro de la línea: alcanza con recortar lo común de cada punta.
+function changedRange(text, other) {
+  if (text.length > MAX_WORD_DIFF || other.length > MAX_WORD_DIFF) return null
+  var max = Math.min(text.length, other.length)
+  var start = 0
+  while (start < max && text[start] === other[start]) start++
+  var end = 0
+  while (end < max - start && text[text.length - 1 - end] === other[other.length - 1 - end]) end++
+  if (start + end === text.length || (start + end) / text.length < MIN_SAME_RATIO) return null
+  return [start, text.length - end]
+}
+function lineNode(tag, cls, sign, text, other) {
+  var n = el(tag, cls)
+  var range = other === undefined ? null : changedRange(text, other)
+  if (!range) {
+    n.textContent = sign + text || ' '
+    return n
+  }
+  n.appendChild(document.createTextNode(sign + text.slice(0, range[0])))
+  n.appendChild(el('span', 'w', text.slice(range[0], range[1])))
+  n.appendChild(document.createTextNode(text.slice(range[1])))
+  return n
+}
+function diffItems(text) {
+  var items = []
+  var del = []
+  var add = []
+  var inHunk = false
+  function flush() {
+    if (del.length || add.length) items.push({ del: del, add: add })
+    del = []
+    add = []
+  }
+  text.split('\n').forEach(function (line) {
+    if (/^diff /.test(line)) inHunk = false
+    if (inHunk && line[0] === '-') return del.push(line.slice(1))
+    if (inHunk && line[0] === '+') return add.push(line.slice(1))
+    flush()
+    if (/^@@/.test(line)) inHunk = true
+    var kind = /^@@/.test(line) ? 'hunk' : inHunk ? 'same' : /^(diff |index |\+\+\+|---)/.test(line) ? 'meta-line' : ''
+    items.push({ kind: kind, line: line })
+  })
+  flush()
+  return items
+}
+function unifiedItem(pre, item) {
+  if (!item.del && !item.add) return pre.appendChild(el('div', item.kind === 'same' ? '' : item.kind, item.line || ' '))
+  item.del.forEach(function (l, i) { pre.appendChild(lineNode('div', 'del', '-', l, item.add[i])) })
+  item.add.forEach(function (l, i) { pre.appendChild(lineNode('div', 'add', '+', l, item.del[i])) })
+}
+function splitItem(pre, item) {
+  var row
+  if (item.kind === 'same') {
+    row = el('div', 'sb')
+    row.appendChild(el('span', '', item.line.slice(1) || ' '))
+    row.appendChild(el('span', '', item.line.slice(1) || ' '))
+    return pre.appendChild(row)
+  }
+  if (!item.del) return unifiedItem(pre, item)
+  for (var i = 0; i < Math.max(item.del.length, item.add.length); i++) {
+    row = el('div', 'sb')
+    row.appendChild(i < item.del.length ? lineNode('span', 'del', '', item.del[i], item.add[i]) : el('span', '', ' '))
+    row.appendChild(i < item.add.length ? lineNode('span', 'add', '', item.add[i], item.del[i]) : el('span', '', ' '))
+    pre.appendChild(row)
+  }
+}
+function paintDiff() {
+  var pre = document.getElementById('diff')
+  splitShown = document.getElementById('main').clientWidth >= SPLIT_WIDTH
+  pre.textContent = ''
+  diffItems(lastDiff).forEach(function (item) { (splitShown ? splitItem : unifiedItem)(pre, item) })
+}
 function showDiff(title, text) {
   document.getElementById('title').textContent = title
   document.getElementById('blank').hidden = true
   document.getElementById('blank').style.display = 'none'
+  document.body.classList.add('detail')
   var pre = document.getElementById('diff')
   pre.hidden = false
-  pre.textContent = ''
-  text.split('\n').forEach(function (line) {
-    var cls = /^\+(?!\+\+)/.test(line) ? 'add' : /^-(?!--)/.test(line) ? 'del' : /^@@/.test(line) ? 'hunk' : /^(diff |index |\+\+\+|---)/.test(line) ? 'meta-line' : ''
-    pre.appendChild(el('div', cls, line || ' '))
-  })
+  lastDiff = text
+  paintDiff()
   pre.scrollTop = 0
-  document.body.classList.add('detail')
 }
+new ResizeObserver(function () {
+  var wide = document.getElementById('main').clientWidth >= SPLIT_WIDTH
+  if (lastDiff !== null && wide !== splitShown) paintDiff()
+}).observe(document.getElementById('main'))
 document.getElementById('back').appendChild(svg('back'))
 document.getElementById('back').onclick = function () { document.body.classList.remove('detail') }
 function openFile(r, f, staged) {
@@ -281,6 +376,7 @@ function fileRow(r, f, staged) {
   p.title = f.sensitive ? 'Parece un secreto: ' + f.p : f.p
   row.appendChild(p)
   row.onclick = function () { openFile(r, f, staged) }
+  if (!staged) row.appendChild(iconBtn('undo', f.new ? 'Borrar archivo nuevo' : 'Descartar cambios', function () { discardDialog(r, f) }))
   row.appendChild(iconBtn(staged ? 'minus' : 'plus', staged ? 'Sacar de Staged' : 'Pasar a Staged', function () {
     act(r.key, staged ? 'unstage' : 'stage', { path: f.p })
   }))
@@ -307,6 +403,13 @@ function syncButtons(r, blocked) {
   if (!blocked && !r.upstream) add('Publicar rama', function () { pushDialog(r) })
   else if (!blocked && r.ahead) add('Push ↑' + r.ahead, function () { pushDialog(r) })
   if (r.behind) add('Pull ↓' + r.behind, function () { act(r.key, 'pull', null, 'Pull listo') })
+  if (r.pr) {
+    var link = el('a', 'commit ghost', 'Abrir PR')
+    link.href = r.pr
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    out.push(link)
+  }
   return out
 }
 function changesView(r, wrap) {
@@ -316,19 +419,30 @@ function changesView(r, wrap) {
   box.placeholder = 'Mensaje de commit'
   box.value = drafts[r.key] || ''
   box.oninput = function () { drafts[r.key] = box.value }
-  function commit() {
+  function commit(thenPush) {
     act(r.key, 'commit', { message: box.value }, 'Commit hecho').then(function () {
       var now = data.find(function (x) { return x.key === r.key })
-      if (now && !now.staged.length) { drafts[r.key] = ''; render() }
+      if (!now || now.staged.length) return // falló: el aviso de error ya se mostró
+      drafts[r.key] = ''
+      render()
+      if (thenPush) pushDialog(now)
     })
   }
-  box.onkeydown = function (e) { if (e.key === 'Enter' && e.ctrlKey && !blocked) commit() }
+  box.onkeydown = function (e) { if (e.key === 'Enter' && e.ctrlKey && !blocked) commit(false) }
   wrap.appendChild(box)
+  var buttons = el('div', 'commit-row')
   var btn = el('button', 'commit', 'Commit')
   btn.disabled = blocked || !r.staged.length
   btn.title = 'Ctrl+Enter'
-  btn.onclick = commit
-  wrap.appendChild(btn)
+  btn.onclick = function () { commit(false) }
+  buttons.appendChild(btn)
+  if (!blocked) {
+    var both = el('button', 'commit ghost', 'Commit y Push')
+    both.disabled = !r.staged.length
+    both.onclick = function () { commit(true) }
+    buttons.appendChild(both)
+  }
+  wrap.appendChild(buttons)
   syncButtons(r, blocked).forEach(function (b) { wrap.appendChild(b) })
   if (blocked) wrap.appendChild(el('div', 'note', r.detached ? 'HEAD suelto: cambiá a una rama para commitear.' : r.branch + ' está protegida. Creá una rama desde origin/' + r.base + ' tocando el nombre de la rama.'))
   if (r.staged.some(function (f) { return f.sensitive })) wrap.appendChild(el('div', 'note warn', 'Hay archivos en Staged que parecen secretos.'))
@@ -392,6 +506,13 @@ function sensitiveDialog(repo, action, extra, okText, files) {
   if (action === 'stage_all') actions.push({ label: 'Agregar el resto', kind: 'primary', safe: true, run: function () { act(repo, action, with_('skip'), okText) } })
   actions.push({ label: action === 'stage_all' ? 'Agregar todo igual' : 'Agregar igual', kind: 'danger', run: function () { act(repo, action, with_('all'), okText) } })
   dialog('Esto parece un secreto', [{ text: 'Si entra en un commit y lo subís, queda en el historial del remoto aunque después lo borres.' }], files.map(fileItem), actions)
+}
+function discardDialog(r, f) {
+  var text = f.new ? 'Es un archivo nuevo: se borra del disco y no se puede recuperar.' : 'Vuelve a la última versión guardada. Lo que cambiaste se pierde y no se puede recuperar.'
+  dialog(f.new ? 'Borrar archivo nuevo' : 'Descartar cambios', [{ text: text }], [fileItem(f.p)], [
+    { label: 'Cancelar', safe: true },
+    { label: f.new ? 'Borrar' : 'Descartar', kind: 'danger', run: function () { act(r.key, 'discard', { path: f.p }, 'Cambios descartados') } }
+  ])
 }
 function pushDialog(r) {
   api('/api/push?repo=' + encodeURIComponent(r.key)).then(function (j) {
@@ -480,7 +601,12 @@ function repoView(r) {
   var chip = el('button', 'branch' + (r.protected ? ' locked' : ''))
   chip.title = (r.protected ? 'Rama protegida. ' : '') + 'Cambiar de rama'
   chip.appendChild(svg(r.protected ? 'lock' : 'branch', 12))
-  chip.appendChild(el('span', '', r.branch))
+  // Recorta el medio: en ramas largas lo que distingue suele estar al principio y al final.
+  if (r.branch.length > SHORT_BRANCH) {
+    chip.title = r.branch + (r.protected ? ' (protegida)' : '')
+    chip.appendChild(el('span', '', r.branch.slice(0, -TAIL_CHARS)))
+    chip.appendChild(el('span', 'tail', r.branch.slice(-TAIL_CHARS)))
+  } else chip.appendChild(el('span', '', r.branch))
   chip.onclick = function (e) { e.stopPropagation(); branchPicker(r) }
   h.appendChild(chip)
   h.appendChild(el('span', 'grow'))
@@ -488,8 +614,7 @@ function repoView(r) {
   if (dirty) h.appendChild(el('span', 'count dirty', String(dirty)))
   var sync = (r.ahead ? '↑' + r.ahead + ' ' : '') + (r.behind ? '↓' + r.behind : '')
   if (sync) h.appendChild(el('span', 'count', sync.trim()))
-  var unpublished = !r.protected && !r.detached && !r.upstream
-  if (unpublished) {
+  if (isUnpublished(r)) {
     var mark = el('span', 'count', 'sin publicar')
     mark.title = 'Esta rama todavía no existe en el remoto'
     h.appendChild(mark)
@@ -499,7 +624,11 @@ function repoView(r) {
   if (r.upstream) tools.appendChild(iconBtn('pull', 'Pull (solo fast-forward)', function () { act(r.key, 'pull', null, 'Pull listo') }))
   if (!r.protected) tools.appendChild(iconBtn('push', 'Push de esta rama', function () { pushDialog(r) }))
   h.appendChild(tools)
-  h.onclick = function () { expanded[r.key] = !expanded[r.key]; render() }
+  h.onclick = function () {
+    expanded[r.key] = !expanded[r.key]
+    render()
+    if (expanded[r.key]) load(true)
+  }
   wrap.appendChild(h)
   if (open) {
     var body = el('div', 'body')
@@ -517,7 +646,7 @@ function repoView(r) {
   return wrap
 }
 function spaceView(name, repos, term) {
-  var closed = closedSpaces[name] && !term
+  var closed = closedSpaces[name] && !term && !filter
   var h = el('div', 'space')
   var chev = svg('chevron', 12)
   chev.setAttribute('class', 'chev' + (closed ? '' : ' down'))
@@ -537,12 +666,40 @@ function spaceView(name, repos, term) {
   repos.forEach(function (r) { kids.appendChild(repoView(r)) })
   list.appendChild(kids)
 }
+function isUnpublished(r) { return !r.plain && !r.protected && !r.detached && !r.upstream }
+var FILTERS = {
+  cambios: { many: 'con cambios', test: function (r) { return r.staged.length + r.changes.length > 0 } },
+  subir: { many: 'para subir', test: function (r) { return r.ahead > 0 || isUnpublished(r) } },
+  traer: { many: 'para traer', test: function (r) { return r.behind > 0 } }
+}
+function renderSummary() {
+  var box = document.getElementById('summary')
+  box.textContent = ''
+  var any = false
+  Object.keys(FILTERS).forEach(function (key) {
+    var count = data.filter(function (r) { return !r.plain && FILTERS[key].test(r) }).length
+    if (!count) {
+      if (filter === key) filter = ''
+      return
+    }
+    any = true
+    var chip = el('button', 'chip' + (filter === key ? ' on' : ''), count + ' ' + FILTERS[key].many)
+    chip.onclick = function () {
+      filter = filter === key ? '' : key
+      render()
+    }
+    box.appendChild(chip)
+  })
+  if (!any && data.length) box.appendChild(el('span', '', 'Todo al día'))
+}
 function render() {
+  renderSummary()
   var top = list.scrollTop
   var term = find.value.trim().toLowerCase()
   var spaces = []
   data.forEach(function (r) {
     if (term && (r.name + ' ' + (r.branch || '')).toLowerCase().indexOf(term) < 0) return
+    if (filter && (r.plain || !FILTERS[filter].test(r))) return
     var last = spaces[spaces.length - 1]
     if (last && last.name === r.group) last.repos.push(r)
     else spaces.push({ name: r.group, repos: [r] })
@@ -551,12 +708,12 @@ function render() {
   spaces.forEach(function (s) { spaceView(s.name, s.repos, term) })
   if (!spaces.length && snapshot) list.appendChild(el('div', '', '')).id = 'empty'
   var none = document.getElementById('empty')
-  if (none) none.textContent = term ? 'Nada coincide.' : 'Orca no tiene proyectos.'
+  if (none) none.textContent = term || filter ? 'Nada coincide.' : 'Orca no tiene proyectos.'
   list.scrollTop = top
 }
 find.oninput = render
 function load(force) {
-  return api('/api/repos').then(function (j) {
+  return api('/api/repos' + (force ? '?fresh=1' : '')).then(function (j) {
     offline = 0
     if (lostToast) { lostToast = false; document.getElementById('toast').style.display = 'none' }
     var next = JSON.stringify(j)
@@ -577,6 +734,15 @@ function load(force) {
 }
 load(true)
 setInterval(function () { if (!document.hidden) load(false) }, 4000)
+// El servidor decide si ya toca: esto solo avisa que hay alguien mirando.
+function autoFetch() {
+  if (document.hidden) return
+  fetch('/api/fetch-all', { method: 'POST', headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' } }).then(reply).then(function (j) {
+    if (!j.skipped) load(true)
+  }).catch(function () {}) // sin red no hay nada que avisar: se reintenta en la próxima vuelta
+}
+autoFetch()
+setInterval(autoFetch, 60000)
 // Mantiene vivo el servidor mientras la pestaña exista, aunque esté en segundo plano.
 setInterval(function () { fetch('/api/ping', { headers: { 'X-Token': TOKEN } }).catch(function () {}) }, 60000)
 })()

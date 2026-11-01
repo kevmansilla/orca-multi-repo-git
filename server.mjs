@@ -23,6 +23,12 @@ const WRITE_MS = 120_000
 const HASH_RE = /^[0-9a-f]{4,40}$/
 const COLOR_RE = /^#[0-9a-f]{3,8}$/i
 const PUSH_PREVIEW = 50
+const FETCH_EVERY_MS = 10 * 60_000
+const FETCH_MS = 30_000
+const FETCH_AT_ONCE = 4
+// Un repo sin movimiento se revisa cada tanto; el que cambió hace poco, en cada consulta.
+const QUIET_CHECK_MS = 20_000
+const ACTIVE_MS = 2 * 60_000
 // Solo pide confirmación: un falso positivo cuesta un clic, y un secreto subido no se puede deshacer.
 const SENSITIVE_RE = /(^|\/)(\.env(\.(?!example$|sample$|template$|dist$)[^/]+)?|\.netrc|\.npmrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.[^/]+)?|secrets?(\.[^/]+)?|[^/]+\.(pem|key|p12|pfx|jks|keystore|tfstate|tfvars))$/i
 
@@ -192,6 +198,28 @@ async function remoteDefault(path) {
   return branch
 }
 
+// Solo hosts conocidos: un alias de ~/.ssh/config no dice a qué sitio apunta.
+export function prUrl(remote, branch, base) {
+  const m = remote.match(/^(?:git@|ssh:\/\/git@|https:\/\/(?:[^/@]+@)?)([^:/]+)[:/](.+?)(?:\.git)?\/?$/)
+  if (!m) return null
+  const [, host, repo] = m
+  const name = branch.split('/').map(encodeURIComponent).join('/')
+  if (host === 'github.com') return `https://github.com/${repo}/compare/${base}...${name}?expand=1`
+  if (host === 'gitlab.com') return `https://gitlab.com/${repo}/-/merge_requests/new?merge_request[source_branch]=${encodeURIComponent(branch)}`
+  if (host === 'bitbucket.org') return `https://bitbucket.org/${repo}/pull-requests/new?source=${encodeURIComponent(branch)}&t=1`
+  return null
+}
+
+const remoteUrls = new Map()
+
+async function remoteUrl(path) {
+  const known = remoteUrls.get(path)
+  if (known && Date.now() - known.at < REMOTE_HEAD_MS) return known.url
+  const url = (await git(path, 'remote', 'get-url', 'origin')).trim()
+  remoteUrls.set(path, { url, at: Date.now() })
+  return url
+}
+
 async function policy(path) {
   const remote = await remoteDefault(path)
   const strict = { blocked: new Set([...DEFAULT_PROTECTED, ...(remote ? [remote] : [])]), base: remote ?? 'main' }
@@ -255,9 +283,12 @@ async function summary(item) {
   const { blocked, base } = await policy(item.path)
   const [ahead = '+0', behind = '-0'] = (head['branch.ab'] ?? '').split(' ')
   const branch = head['branch.head'] ?? '?'
+  const upstream = head['branch.upstream'] ?? null
+  const offersPr = upstream && !blocked.has(branch) && branch !== base && branch !== '(detached)'
   return {
     key: item.key, name: item.name, group: item.group, color: item.color, branch, base,
-    detached: branch === '(detached)', upstream: head['branch.upstream'] ?? null,
+    detached: branch === '(detached)', upstream,
+    pr: offersPr ? prUrl(await remoteUrl(item.path), branch, base) : null,
     ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch),
     staged: withFlag(staged), changes: withFlag(changes)
   }
@@ -332,6 +363,15 @@ async function stageAll(path, allow) {
   if (rest.length) return write(path, ['--literal-pathspecs', 'add', '--pathspec-from-file=-', '--pathspec-file-nul'], rest.join('\0'))
 }
 
+async function discard(path, rel) {
+  const { changes } = await status(path)
+  const file = changes.find((f) => f.p === rel)
+  if (!file) throw new ActionError('Ese archivo ya no tiene cambios para descartar.')
+  if (file.s === '!') throw new ActionError('Tiene conflictos: resolvelo antes de descartar.')
+  if (file.new) return write(path, ['--literal-pathspecs', 'clean', '-f', '-d', '--', rel])
+  return write(path, ['--literal-pathspecs', 'restore', '--', rel])
+}
+
 async function act(item, body) {
   const { path } = item
   const state = await summary(item)
@@ -352,6 +392,8 @@ async function act(item, body) {
       return stageAll(path, body.allow)
     case 'unstage_all':
       return write(path, ['restore', '--staged', '--', '.'])
+    case 'discard':
+      return discard(path, body.path)
     case 'commit': {
       const message = String(body.message ?? '').trim()
       if (locked) throw new ActionError(`No se commitea en ${state.branch}: creá una rama desde origin/${state.base}.`)
@@ -410,7 +452,41 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
   // Se lee una sola vez: si el plugin se actualiza, un servidor viejo no debe servir una página que no sabe atender.
   const page = readFileSync(INDEX)
   const queues = new Map()
+  const summaries = new Map()
   let lastUse = Date.now()
+  let lastFetch = 0
+
+  // Vence la consulta pero conserva changedAt: si no, todos los repos pasarían a contar como activos.
+  function expireSummaries() {
+    for (const known of summaries.values()) known.at = 0
+  }
+
+  async function freshSummary(item) {
+    const known = summaries.get(item.key)
+    const now = Date.now()
+    if (known && now - known.at < QUIET_CHECK_MS && now - known.changedAt >= ACTIVE_MS) return known.data
+    const data = await summary(item)
+    const same = known && JSON.stringify(known.data) === JSON.stringify(data)
+    summaries.set(item.key, { data, at: now, changedAt: same ? known.changedAt : now })
+    return data
+  }
+
+  async function fetchAll() {
+    if (Date.now() - lastFetch < FETCH_EVERY_MS) return { skipped: true }
+    lastFetch = Date.now()
+    const items = listRepos().filter((r) => !r.plain)
+    let failed = 0
+    async function worker() {
+      for (let item = items.shift(); item; item = items.shift()) {
+        const { path, key } = item
+        const { code } = await inOrder(key, () => run(['-C', path, 'fetch', '--quiet', 'origin'], { env: WRITE_ENV, timeout: FETCH_MS }))
+        if (code !== 0) failed++
+      }
+    }
+    await Promise.all(Array.from({ length: FETCH_AT_ONCE }, worker))
+    expireSummaries()
+    return { failed }
+  }
 
   // Dos acciones sobre un mismo repo se pisarían en el index de git.
   function inOrder(key, task) {
@@ -449,8 +525,9 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
     lastUse = Date.now()
     if (url.pathname === '/api/ping') return reply(res, 200, { ok: true })
     if (url.pathname === '/api/repos') {
+      if (q.get('fresh') === '1') expireSummaries()
       const items = []
-      for (const r of listRepos()) items.push(await summary(r))
+      for (const r of listRepos()) items.push(await freshSummary(r))
       return reply(res, 200, items)
     }
     const item = repoOf(q.get('repo'))
@@ -467,10 +544,11 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
     return reply(res, 404, { error: 'no existe' })
   }
 
-  async function post(req, res, allowedHost) {
+  async function post(req, res, url, allowedHost) {
     if (!allowedHost || !sameToken(req.headers['x-token'], token)) return reply(res, 403, { error: 'token' })
     lastUse = Date.now()
     if (req.headers['content-type'] !== 'application/json') throw new ActionError('Pedido inválido.')
+    if (url.pathname === '/api/fetch-all') return reply(res, 200, await fetchAll())
     let body
     try {
       body = JSON.parse(await readBody(req))
@@ -478,7 +556,9 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
       throw e instanceof ActionError ? e : new ActionError('Pedido inválido.')
     }
     const item = repoOf(body.repo)
+    summaries.delete(item.key)
     await inOrder(item.key, () => act(item, body))
+    summaries.delete(item.key)
     return reply(res, 200, { ok: true })
   }
 
@@ -487,7 +567,7 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
       const url = new URL(req.url, 'http://127.0.0.1')
       const { port: actual } = server.address()
       const allowedHost = [`127.0.0.1:${actual}`, `localhost:${actual}`].includes(req.headers.host)
-      const handler = req.method === 'POST' ? post(req, res, allowedHost) : get(req, res, url, allowedHost)
+      const handler = req.method === 'POST' ? post(req, res, url, allowedHost) : get(req, res, url, allowedHost)
       handler.catch((e) => {
         if (res.headersSent) return
         if (e instanceof ActionError) reply(res, e.status ?? 400, { error: e.message, ...e.extra })

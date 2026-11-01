@@ -1,6 +1,6 @@
 // Prueba las acciones de la app contra un repo descartable en una carpeta temporal. No toca los repos reales.
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -31,7 +31,7 @@ writeFileSync(join(tmp, 'policy.json'), JSON.stringify({ rules: [{ path: repo, b
 process.env.MRG_REPOS_FILE = join(tmp, 'repos.json')
 process.env.MRG_POLICY_FILE = join(tmp, 'policy.json')
 
-const { startServer } = await import('./server.mjs')
+const { prUrl, startServer } = await import('./server.mjs')
 const { port, token, close } = await startServer()
 const base = `http://127.0.0.1:${port}`
 let failures = 0
@@ -109,6 +109,17 @@ try {
   check('la vista previa del push lista commits y secretos', preview.count === 1 && preview.commits[0].t === 'con secreto' && preview.sensitive.join() === '.env')
   await act('switch', { branch: 'master' })
   check('no hay vista previa de push en rama protegida', (await call('/api/push?repo=app'))[0] === 400)
+  appendFileSync(join(repo, 'a.txt'), 'descartar\n')
+  writeFileSync(join(repo, 'nuevo.txt'), 'x\n')
+  check('descarta un cambio', (await act('discard', { path: 'a.txt' })) === 200 && !readFileSync(join(repo, 'a.txt'), 'utf8').includes('descartar'))
+  check('borra un archivo nuevo', (await act('discard', { path: 'nuevo.txt' })) === 200 && !existsSync(join(repo, 'nuevo.txt')))
+  check('borra una carpeta nueva', (await act('discard', { path: 'conf/' })) === 200 && !existsSync(join(repo, 'conf')))
+  check('rechaza descartar lo que no cambió', (await act('discard', { path: 'a.txt' })) === 400)
+  check('fetch de todos los repos', (await call('/api/fetch-all', {}))[1].failed === 0)
+  check('no repite el fetch enseguida', (await call('/api/fetch-all', {}))[1].skipped === true)
+  check('link de PR en GitHub', prUrl('git@github.com:a/b.git', 'x/y', 'main') === 'https://github.com/a/b/compare/main...x/y?expand=1')
+  check('link de PR en Bitbucket', prUrl('https://u:t@bitbucket.org/a/b.git', 'x', 'dev') === 'https://bitbucket.org/a/b/pull-requests/new?source=x&t=1')
+  check('sin link de PR en un host desconocido', prUrl('git@mi-alias:a/b.git', 'x', 'main') === null)
 } finally {
   close()
 }
