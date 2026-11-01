@@ -73,6 +73,12 @@
   .repo.wt { margin-left:18px; }
   .repo.wt .name { color:var(--muted); }
   .more { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
+  .menu { display:flex; flex-direction:column; gap:1px; margin-top:4px; padding:3px; border:1px solid var(--line); border-radius:7px; }
+  .menu button { min-height:26px; padding:3px 8px; border:0; border-radius:5px; background:none; color:var(--soft); font-size:12px; text-align:left; cursor:pointer; }
+  .menu button:hover { background:var(--hover); color:var(--fg); }
+  .menu span { display:block; font-size:11px; color:var(--faint); }
+  .dot { width:6px; height:6px; flex:none; border-radius:50%; background:var(--warn); }
+  .dot.up { background:var(--info); }
   .dlg input { height:32px; padding:0 10px; }
   .name { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:400; color:var(--soft); }
   .repo:hover .name, .repo.open .name { color:var(--fg); }
@@ -106,7 +112,8 @@
   a.commit { display:flex; align-items:center; justify-content:center; text-decoration:none; }
   .commit:disabled { background:var(--hover); color:var(--faint); cursor:not-allowed; }
   .commit.ghost { background:none; border:1px solid var(--line); color:var(--soft); }
-  .commit.ghost:hover { background:var(--hover); }
+  .commit.ghost:hover:enabled { background:var(--hover); }
+  .commit.ghost:disabled { background:none; color:var(--faint); }
   .note { margin:6px 0 2px; font-size:12px; color:var(--muted); }
   .note.warn, .path.warn { color:var(--warn); }
   .group { display:flex; align-items:center; height:24px; margin-top:8px; font-size:11px; font-weight:500; color:var(--faint); }
@@ -187,6 +194,8 @@ var MIN_SAME_RATIO = 0.3
 var TAIL_CHARS = 12
 var SHORT_BRANCH = 24
 var filter = ''
+var menus = {}
+var firstRank = null
 var lastDiff = null
 var splitShown = false
 var offline = 0
@@ -548,17 +557,34 @@ function removeWorktreeDialog(r) {
   ])
 }
 function moreActions(r, wrap) {
+  var items = r.commands.filter(function (c) { return !c.urgent }).map(function (c) {
+    return { label: c.label, hint: c.hint, run: function () { commandClick(r, c) } }
+  })
+  if (r.canCreateWorktree && !r.worktreeOf) items.push({ label: 'Nuevo worktree', hint: 'Otra carpeta del repo, en su propia rama', run: function () { newWorktreeDialog(r) } })
+  if (r.canRemoveWorktree && r.worktreeOf) items.push({ label: 'Borrar worktree', hint: 'Borra la carpeta; la rama queda', run: function () { removeWorktreeDialog(r) } })
   var row = el('div', 'more')
-  function add(label, hint, fn) {
-    var b = el('button', 'chip', label)
-    b.title = hint
-    b.onclick = fn
+  // Un merge frenado no espera en un menú: es lo primero que hay que resolver.
+  r.commands.filter(function (c) { return c.urgent }).forEach(function (c) {
+    var b = el('button', 'chip on', c.label)
+    b.title = c.hint
+    b.onclick = function () { commandClick(r, c) }
     row.appendChild(b)
+  })
+  if (items.length) {
+    var more = el('button', 'chip' + (menus[r.key] ? ' on' : ''), 'Más…')
+    more.onclick = function () { menus[r.key] = !menus[r.key]; render() }
+    row.appendChild(more)
   }
-  r.commands.forEach(function (c) { add(c.label, c.hint, function () { commandClick(r, c) }) })
-  if (r.canCreateWorktree && !r.worktreeOf) add('Nuevo worktree', 'Otra carpeta del repo, en su propia rama', function () { newWorktreeDialog(r) })
-  if (r.canRemoveWorktree && r.worktreeOf) add('Borrar worktree', 'Borra la carpeta; la rama queda', function () { removeWorktreeDialog(r) })
   if (row.firstChild) wrap.appendChild(row)
+  if (!items.length || !menus[r.key]) return
+  var menu = el('div', 'menu')
+  items.forEach(function (item) {
+    var b = el('button', '', item.label)
+    b.title = item.hint
+    b.onclick = function () { menus[r.key] = false; render(); item.run() }
+    menu.appendChild(b)
+  })
+  wrap.appendChild(menu)
 }
 function discardDialog(r, f) {
   var text = f.new ? 'Es un archivo nuevo: se borra del disco y no se puede recuperar.' : 'Vuelve a la última versión guardada. Lo que cambiaste se pierde y no se puede recuperar.'
@@ -632,6 +658,11 @@ function folderIcon(r) {
   if (r.color) icon.style.color = r.color // el color que el repo tiene en Orca
   return icon
 }
+function dot(cls, title) {
+  var d = el('span', 'dot' + cls)
+  d.title = title
+  return d
+}
 function repoView(r) {
   var wrap = el('section')
   var open = !!expanded[r.key]
@@ -642,6 +673,8 @@ function repoView(r) {
   h.appendChild(chev)
   h.appendChild(folderIcon(r))
   h.appendChild(el('span', 'name', r.name))
+  if (FILTERS.cambios.test(r)) h.appendChild(dot('', 'Tiene cambios'))
+  if (FILTERS.subir.test(r)) h.appendChild(dot(' up', 'Tiene commits sin subir'))
   var chip = el('button', 'branch' + (r.protected ? ' locked' : ''))
   chip.title = (r.protected ? 'Rama protegida. ' : '') + 'Cambiar de rama'
   chip.appendChild(svg(r.protected ? 'lock' : 'branch', 12))
@@ -737,7 +770,28 @@ function renderSummary() {
   })
   if (!any && data.length) box.appendChild(el('span', '', 'Todo al día'))
 }
+function rootOf(r) { return r.worktreeOf || r.key }
+function isPending(r) { return Object.keys(FILTERS).some(function (key) { return FILTERS[key].test(r) }) }
+// Se calcula una vez, al abrir: si se reordenara en vivo, los repos saltarían mientras trabajás.
+function rememberOrder() {
+  if (firstRank || !data.length) return
+  firstRank = {}
+  data.forEach(function (r) { if (isPending(r)) firstRank[rootOf(r)] = true })
+}
+function pendingFirst(repos) {
+  var blocks = []
+  var byRoot = {}
+  repos.forEach(function (r) {
+    var root = rootOf(r)
+    if (!byRoot[root]) blocks.push(byRoot[root] = { root: root, repos: [] })
+    byRoot[root].repos.push(r) // el worktree queda pegado a su repo
+  })
+  var top = blocks.filter(function (b) { return firstRank && firstRank[b.root] })
+  var rest = blocks.filter(function (b) { return !(firstRank && firstRank[b.root]) })
+  return top.concat(rest).reduce(function (all, b) { return all.concat(b.repos) }, [])
+}
 function render() {
+  rememberOrder()
   renderSummary()
   var top = list.scrollTop
   var term = find.value.trim().toLowerCase()
@@ -750,7 +804,7 @@ function render() {
     else spaces.push({ name: r.group, repos: [r] })
   })
   list.textContent = ''
-  spaces.forEach(function (s) { spaceView(s.name, s.repos, term) })
+  spaces.forEach(function (s) { spaceView(s.name, pendingFirst(s.repos), term) })
   if (!spaces.length && snapshot) list.appendChild(el('div', '', '')).id = 'empty'
   var none = document.getElementById('empty')
   if (none) none.textContent = term || filter ? 'Nada coincide.' : 'Orca no tiene proyectos.'

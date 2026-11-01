@@ -246,7 +246,7 @@ function commandsFor(root, { isMerging, base, isProtected }) {
   const { commands, worktrees } = readPolicy()
   const applies = (c) => inScope(c, root) && (c.when !== 'merging' || isMerging) && (c.when !== 'feature' || !isProtected)
   const list = commands.flatMap((c, id) =>
-    applies(c) ? [{ id, label: c.label.replaceAll('{base}', base), hint: c.hint ?? c.run, run: c.run, warn: !!c.warn }] : []
+    applies(c) ? [{ id, label: c.label.replaceAll('{base}', base), hint: c.hint ?? c.run, run: c.run, warn: !!c.warn, urgent: c.when === 'merging' }] : []
   )
   const wt = worktrees && inScope(worktrees, root) ? worktrees : null
   return { commands: list, canCreateWorktree: !!wt?.create, canRemoveWorktree: !!wt?.remove }
