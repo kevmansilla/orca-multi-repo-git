@@ -73,10 +73,6 @@
   .repo.wt { margin-left:18px; }
   .repo.wt .name { color:var(--muted); }
   .more { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
-  .menu { display:flex; flex-direction:column; gap:1px; margin-top:4px; padding:3px; border:1px solid var(--line); border-radius:7px; }
-  .menu button { min-height:26px; padding:3px 8px; border:0; border-radius:5px; background:none; color:var(--soft); font-size:12px; text-align:left; cursor:pointer; }
-  .menu button:hover { background:var(--hover); color:var(--fg); }
-  .menu span { display:block; font-size:11px; color:var(--faint); }
   .dot { width:6px; height:6px; flex:none; border-radius:50%; background:var(--warn); }
   .dot.up { background:var(--info); }
   .dlg input { height:32px; padding:0 10px; }
@@ -194,7 +190,6 @@ var MIN_SAME_RATIO = 0.3
 var TAIL_CHARS = 12
 var SHORT_BRANCH = 24
 var filter = ''
-var menus = {}
 var firstRank = null
 var lastDiff = null
 var splitShown = false
@@ -557,34 +552,19 @@ function removeWorktreeDialog(r) {
   ])
 }
 function moreActions(r, wrap) {
-  var items = r.commands.filter(function (c) { return !c.urgent }).map(function (c) {
-    return { label: c.label, hint: c.hint, run: function () { commandClick(r, c) } }
-  })
-  if (r.canCreateWorktree && !r.worktreeOf) items.push({ label: 'Nuevo worktree', hint: 'Otra carpeta del repo, en su propia rama', run: function () { newWorktreeDialog(r) } })
-  if (r.canRemoveWorktree && r.worktreeOf) items.push({ label: 'Borrar worktree', hint: 'Borra la carpeta; la rama queda', run: function () { removeWorktreeDialog(r) } })
   var row = el('div', 'more')
-  // Un merge frenado no espera en un menú: es lo primero que hay que resolver.
-  r.commands.filter(function (c) { return c.urgent }).forEach(function (c) {
-    var b = el('button', 'chip on', c.label)
-    b.title = c.hint
-    b.onclick = function () { commandClick(r, c) }
+  function add(label, hint, fn, cls) {
+    var b = el('button', 'chip' + (cls || ''), label)
+    b.title = hint
+    b.onclick = fn
     row.appendChild(b)
-  })
-  if (items.length) {
-    var more = el('button', 'chip' + (menus[r.key] ? ' on' : ''), 'Más…')
-    more.onclick = function () { menus[r.key] = !menus[r.key]; render() }
-    row.appendChild(more)
   }
+  // Un merge frenado va primero: es lo que hay que resolver antes que nada.
+  r.commands.filter(function (c) { return c.urgent }).forEach(function (c) { add(c.label, c.hint, function () { commandClick(r, c) }, ' on') })
+  r.commands.filter(function (c) { return !c.urgent }).forEach(function (c) { add(c.label, c.hint, function () { commandClick(r, c) }) })
+  if (r.canCreateWorktree && !r.worktreeOf) add('Nuevo worktree', 'Otra carpeta del repo, en su propia rama', function () { newWorktreeDialog(r) })
+  if (r.canRemoveWorktree && r.worktreeOf) add('Borrar worktree', 'Borra la carpeta; la rama queda', function () { removeWorktreeDialog(r) })
   if (row.firstChild) wrap.appendChild(row)
-  if (!items.length || !menus[r.key]) return
-  var menu = el('div', 'menu')
-  items.forEach(function (item) {
-    var b = el('button', '', item.label)
-    b.title = item.hint
-    b.onclick = function () { menus[r.key] = false; render(); item.run() }
-    menu.appendChild(b)
-  })
-  wrap.appendChild(menu)
 }
 function discardDialog(r, f) {
   var text = f.new ? 'Es un archivo nuevo: se borra del disco y no se puede recuperar.' : 'Vuelve a la última versión guardada. Lo que cambiaste se pierde y no se puede recuperar.'
