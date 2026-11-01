@@ -32,7 +32,8 @@ writeFileSync(join(tmp, 'policy.json'), JSON.stringify({
   commands: [
     { label: 'Mergear', run: 'git p -m', warn: true },
     { label: 'Continuar', run: 'git p -c', when: 'merging' },
-    { label: 'Otro', run: 'git otro', under: join(tmp, 'libre') }
+    { label: 'Otro', run: 'git otro', under: join(tmp, 'libre') },
+    { label: 'A {base}', run: 'git a', when: 'feature' }
   ],
   worktrees: { create: 'git wt {repo} {branch}', remove: 'git wt -d {repo} {branch}' }
 }))
@@ -146,6 +147,8 @@ try {
   check('lista el worktree debajo de su repo', wt?.branch === 'rama-real' && wt.key === join(tmp, 'wt-real'))
   check('el worktree hereda las reglas de su repo', wt?.base === 'master' && wt.deploys === true)
   check('borra un worktree con el comando configurado', (await call('/api/run', { repo: wt.key, command: 'wt-remove' }))[0] === 200 && opened.at(-1).command === `git wt -d ${shellQuote(repo)} 'rama-real'`)
+  check('el nombre del botón usa la base del repo', withWt.find((r) => r.key === 'libre').commands.some((c) => c.label === 'A master'))
+  check('no ofrece el comando de rama parado en una protegida', !withWt[0].commands.some((c) => c.label === 'A master'))
   writeFileSync(join(repo, '.git', 'MERGE_HEAD'), 'x')
   check('ofrece continuar con un merge frenado', (await call('/api/repos?fresh=1'))[1][0].commands.some((c) => c.label === 'Continuar'))
   rmSync(join(repo, '.git', 'MERGE_HEAD'))

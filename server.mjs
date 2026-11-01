@@ -246,10 +246,11 @@ function stopped(path) {
   }
 }
 
-function commandsFor(root, isMerging) {
+function commandsFor(root, { isMerging, base, isProtected }) {
   const { commands, worktrees } = readPolicy()
+  const applies = (c) => inScope(c, root) && (c.when !== 'merging' || isMerging) && (c.when !== 'feature' || !isProtected)
   const list = commands.flatMap((c, id) =>
-    inScope(c, root) && (c.when !== 'merging' || isMerging) ? [{ id, label: c.label, run: c.run, warn: !!c.warn }] : []
+    applies(c) ? [{ id, label: c.label.replaceAll('{base}', base), hint: c.hint ?? c.run, run: c.run, warn: !!c.warn }] : []
   )
   const wt = worktrees && inScope(worktrees, root) ? worktrees : null
   return { commands: list, canCreateWorktree: !!wt?.create, canRemoveWorktree: !!wt?.remove }
@@ -356,7 +357,7 @@ async function summary(item) {
   const offersPr = upstream && !blocked.has(branch) && branch !== base && branch !== '(detached)'
   return {
     key: item.key, name: item.name, group: item.group, color: item.color, branch, base, deploys,
-    worktreeOf: item.worktreeOf ?? null, ...commandsFor(root, stopped(item.path)),
+    worktreeOf: item.worktreeOf ?? null, ...commandsFor(root, { isMerging: stopped(item.path), base, isProtected: blocked.has(branch) }),
     detached: branch === '(detached)', upstream,
     pr: offersPr ? prUrl(await remoteUrl(item.path), branch, base) : null,
     ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch),

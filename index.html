@@ -520,7 +520,7 @@ function runInTerminal(r, command, extra) {
 }
 function commandClick(r, c) {
   if (!c.warn || !r.deploys) return runInTerminal(r, c.id)
-  dialog('Esto puede desplegar', [
+  dialog(c.label, [
     { warn: true, text: 'En este repo, lo que llega a ' + r.base + ' por push se despliega.' },
     { text: 'Se abre una terminal con tu comando. Antes del push te va a pedir confirmación ahí.' }
   ], [fileItem(c.run)], [
@@ -530,13 +530,13 @@ function commandClick(r, c) {
 }
 function newWorktreeDialog(r) {
   var input = el('input')
-  input.placeholder = 'Rama del ticket'
+  input.placeholder = 'Nombre de la rama'
   function create() {
     var branch = input.value.trim()
     closeModal()
     if (branch) runInTerminal(r, 'wt-create', { branch: branch })
   }
-  dialog('Nuevo worktree de ' + r.name, [{ text: 'Si la rama no existe, se crea desde origin/' + r.base + '.' }], [], [
+  dialog('Nuevo worktree de ' + r.name, [{ text: 'Si la rama no existe, se crea desde origin/' + r.base + '. Si ya existe, se usa esa.' }], [], [
     { label: 'Cancelar' },
     { label: 'Crear', kind: 'primary', run: create }
   ])
@@ -553,14 +553,15 @@ function removeWorktreeDialog(r) {
 }
 function moreActions(r, wrap) {
   var row = el('div', 'more')
-  function add(label, fn) {
+  function add(label, hint, fn) {
     var b = el('button', 'chip', label)
+    b.title = hint
     b.onclick = fn
     row.appendChild(b)
   }
-  r.commands.forEach(function (c) { add(c.label, function () { commandClick(r, c) }) })
-  if (r.canCreateWorktree && !r.worktreeOf) add('Nuevo worktree', function () { newWorktreeDialog(r) })
-  if (r.canRemoveWorktree && r.worktreeOf) add('Borrar worktree', function () { removeWorktreeDialog(r) })
+  r.commands.forEach(function (c) { add(c.label, c.hint, function () { commandClick(r, c) }) })
+  if (r.canCreateWorktree && !r.worktreeOf) add('Nuevo worktree', 'Otra carpeta del repo, en su propia rama', function () { newWorktreeDialog(r) })
+  if (r.canRemoveWorktree && r.worktreeOf) add('Borrar worktree', 'Borra la carpeta; la rama queda', function () { removeWorktreeDialog(r) })
   if (row.firstChild) wrap.appendChild(row)
 }
 function discardDialog(r, f) {
