@@ -217,6 +217,7 @@ function readPolicy() {
     rules,
     exclude: Array.isArray(data?.exclude) ? data.exclude : [],
     floating: data?.terminal === 'floating',
+    pullRequests: data?.pullRequests !== false,
     commands: (Array.isArray(data?.commands) ? data.commands : []).map(scoped),
     worktrees: data?.worktrees ? scoped(data.worktrees) : null
   }
@@ -354,7 +355,7 @@ async function summary(item) {
   const [ahead = '+0', behind = '-0'] = (head['branch.ab'] ?? '').split(' ')
   const branch = head['branch.head'] ?? '?'
   const upstream = head['branch.upstream'] ?? null
-  const offersPr = upstream && !blocked.has(branch) && branch !== base && branch !== '(detached)'
+  const offersPr = readPolicy().pullRequests && upstream && !blocked.has(branch) && branch !== base && branch !== '(detached)'
   return {
     key: item.key, name: item.name, group: item.group, color: item.color, branch, base, deploys,
     worktreeOf: item.worktreeOf ?? null, ...commandsFor(root, { isMerging: stopped(item.path), base, isProtected: blocked.has(branch) }),

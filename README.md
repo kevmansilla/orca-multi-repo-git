@@ -67,6 +67,8 @@ Podés agregar botones que abren una terminal de Orca en el repo y corren tus co
 
 Con `"terminal": "floating"`, los comandos corren en la terminal flotante de Orca si está esperando un comando. Si no, o si tiene un programa abierto, se abre una pestaña nueva.
 
+Con `"pullRequests": false` se oculta el botón Abrir PR.
+
 `worktrees` define `create` y `remove`, con `{repo}`, `{path}` y `{branch}` como variables. Los comandos corren con tus permisos, y la protección de ramas de la app no los alcanza.
 
 ## Secretos
