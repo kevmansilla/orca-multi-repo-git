@@ -14,14 +14,27 @@ Necesitás Orca 1.4.245 o más nuevo.
    git clone git@github.com:kevmansilla/orca-multi-repo-git.git ~/orca-plugins/multi-repo-git
    ```
 
-2. Agregá esa carpeta a `devPluginPaths` en la configuración de Orca.
-3. Aprobá el plugin cuando Orca lo pida, en Settings → Plugins.
+2. En Orca, abrí Settings → Plugins y tocá **Turn on plugins** si están apagados.
+3. En **Development folders…**, agregá esa carpeta.
+4. Revisá el plugin y habilitalo. Es de acceso completo: corre con tus permisos.
 
 ## Cómo se abre
 
 Con `Ctrl+Shift+J`, buscando **Source Control: Abrir**. También desde Settings → Plugins.
 
 El atajo `Ctrl+Alt+Shift+G` no funciona con el foco en una terminal: Orca solo pasa los atajos de plugins cuando el foco está en otra parte.
+
+## Dejarla siempre disponible (opcional, Linux)
+
+Sin esto, el servidor arranca con el comando y se apaga tras 10 minutos sin uso. Para que la pestaña se abra sola cada vez que abrís Orca, instalá el servicio de usuario de `systemd`. Necesita Node 22.5 o más nuevo.
+
+```bash
+bash scripts/install-service.sh          # instala y arranca
+bash scripts/install-service.sh url      # muestra la dirección para abrir en el navegador de Orca
+bash scripts/install-service.sh remove   # lo desinstala
+```
+
+El servidor queda siempre encendido, con unos 80 MB de memoria. Usa un puerto y un token fijos, guardados con permisos `0600` en `~/.config/orca-multi-repo-git/service.env`. Al actualizar el plugin se reinicia solo. La pestaña se abre en el workspace activo, no vuelve a la posición donde la tenías.
 
 ## Protección
 

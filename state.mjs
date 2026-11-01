@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DIR = join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'orca-multi-repo-git')
-const CODE = ['server.mjs', 'daemon.mjs', 'state.mjs', 'index.html'].map((f) => fileURLToPath(new URL(`./${f}`, import.meta.url)))
+const CODE = ['server.mjs', 'daemon.mjs', 'state.mjs', 'index.html', 'orca-launch.mjs', 'orca-tab.mjs'].map((f) => fileURLToPath(new URL(`./${f}`, import.meta.url)))
 
 export const statePath = () => join(DIR, 'server.json')
 

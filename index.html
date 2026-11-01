@@ -167,6 +167,9 @@ var drafts = {}
 var logs = {}
 var selected = ''
 var closedSpaces = readClosed()
+var OFFLINE_POLLS = 3
+var offline = 0
+var lostToast = false
 var list = document.getElementById('list')
 var find = document.getElementById('find')
 
@@ -554,13 +557,23 @@ function render() {
 find.oninput = render
 function load(force) {
   return api('/api/repos').then(function (j) {
+    offline = 0
+    if (lostToast) { lostToast = false; document.getElementById('toast').style.display = 'none' }
     var next = JSON.stringify(j)
     var typing = document.activeElement && document.activeElement !== find && /TEXTAREA|INPUT/.test(document.activeElement.tagName)
     if (next === snapshot && !force) return
     data = j
     snapshot = next
     if (!typing || force) render()
-  }).catch(function (e) { toast(e.message) })
+  }).catch(function (e) {
+    // El servicio se reinicia al actualizarse: un corte de segundos no merece un aviso.
+    if (!(e instanceof TypeError)) return toast(e.message)
+    offline++
+    if (offline >= OFFLINE_POLLS && !lostToast) {
+      lostToast = true
+      toast('Se perdió la conexión con el servidor de la app.')
+    }
+  })
 }
 load(true)
 setInterval(function () { if (!document.hidden) load(false) }, 4000)
