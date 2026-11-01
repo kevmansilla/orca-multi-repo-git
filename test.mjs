@@ -77,6 +77,8 @@ try {
   check('la rama nueva no está protegida y conserva lo staged', s.branch === 'rama-prueba' && !s.protected && s.staged.length === 1)
   check('commit sin mensaje falla', (await act('commit', { message: ' ' })) === 400)
   check('commit en la rama', (await act('commit', { message: 'prueba' })) === 200)
+  const noRemote = await call('/api/action', { repo: 'app', action: 'pull' })
+  check('pull sin rama remota explica que falta el push', noRemote[0] === 400 && noRemote[1].error.includes('Push'))
   check('push de la rama', (await act('push')) === 200 && (await state()).upstream === 'origin/rama-prueba')
   check('stage de todo y commit', (await act('stage_all')) === 200 && (await act('commit', { message: 'dos' })) === 200)
   check('cambia a rama remota', (await act('switch', { branch: 'origin/otra' })) === 200 && (await state()).branch === 'otra')

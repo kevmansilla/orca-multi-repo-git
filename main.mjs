@@ -24,8 +24,8 @@ function openTab(url) {
   })
 }
 
-async function responds(state) {
-  if (!state || state.stamp !== serverStamp()) return false
+async function alive(state) {
+  if (!state) return false
   try {
     const r = await fetch(`http://127.0.0.1:${state.port}/api/ping`, { headers: { 'X-Token': state.token } })
     return r.ok
@@ -34,9 +34,22 @@ async function responds(state) {
   }
 }
 
+const responds = async (state) => state?.stamp === serverStamp() && (await alive(state))
+
+// Solo se apaga si responde con su token: el pid de un servidor caído pudo pasar a otro proceso.
+async function retire(state) {
+  if (!(await alive(state))) return
+  try {
+    process.kill(state.pid, 'SIGTERM') // un servidor de otra versión no debe seguir atendiendo pestañas viejas
+  } catch {
+    // se apagó entre la consulta y la señal
+  }
+}
+
 async function ensureServer() {
   const current = readState()
   if (await responds(current)) return current
+  await retire(current)
   spawn(process.execPath, [DAEMON], { detached: true, stdio: 'ignore', env: process.env }).unref()
   for (let i = 0; i < START_TRIES; i++) {
     await sleep(100)

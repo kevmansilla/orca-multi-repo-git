@@ -92,6 +92,8 @@
   ::placeholder { color:var(--faint); }
   .commit { width:100%; height:28px; margin:6px 0 2px; border:0; border-radius:7px; background:var(--primary); color:var(--on-primary); font-size:12px; font-weight:500; cursor:pointer; }
   .commit:disabled { background:var(--hover); color:var(--faint); cursor:not-allowed; }
+  .commit.ghost { background:none; border:1px solid var(--line); color:var(--soft); }
+  .commit.ghost:hover { background:var(--hover); }
   .note { margin:6px 0 2px; font-size:12px; color:var(--muted); }
   .note.warn, .path.warn { color:var(--warn); }
   .group { display:flex; align-items:center; height:24px; margin-top:8px; font-size:11px; font-weight:500; color:var(--faint); }
@@ -291,6 +293,19 @@ function group(r, label, files, staged, wrap) {
   wrap.appendChild(g)
   files.forEach(function (f) { wrap.appendChild(fileRow(r, f, staged)) })
 }
+// Subir y traer quedan a la vista: el commit es local y sin esto no se nota que falta el push.
+function syncButtons(r, blocked) {
+  var out = []
+  function add(label, fn) {
+    var b = el('button', 'commit ghost', label)
+    b.onclick = fn
+    out.push(b)
+  }
+  if (!blocked && !r.upstream) add('Publicar rama', function () { pushDialog(r) })
+  else if (!blocked && r.ahead) add('Push ↑' + r.ahead, function () { pushDialog(r) })
+  if (r.behind) add('Pull ↓' + r.behind, function () { act(r.key, 'pull', null, 'Pull listo') })
+  return out
+}
 function changesView(r, wrap) {
   var blocked = r.protected || r.detached
   var box = el('textarea')
@@ -311,6 +326,7 @@ function changesView(r, wrap) {
   btn.title = 'Ctrl+Enter'
   btn.onclick = commit
   wrap.appendChild(btn)
+  syncButtons(r, blocked).forEach(function (b) { wrap.appendChild(b) })
   if (blocked) wrap.appendChild(el('div', 'note', r.detached ? 'HEAD suelto: cambiá a una rama para commitear.' : r.branch + ' está protegida. Creá una rama desde origin/' + r.base + ' tocando el nombre de la rama.'))
   if (r.staged.some(function (f) { return f.sensitive })) wrap.appendChild(el('div', 'note warn', 'Hay archivos en Staged que parecen secretos.'))
   group(r, 'Staged', r.staged, true, wrap)
@@ -469,9 +485,15 @@ function repoView(r) {
   if (dirty) h.appendChild(el('span', 'count dirty', String(dirty)))
   var sync = (r.ahead ? '↑' + r.ahead + ' ' : '') + (r.behind ? '↓' + r.behind : '')
   if (sync) h.appendChild(el('span', 'count', sync.trim()))
+  var unpublished = !r.protected && !r.detached && !r.upstream
+  if (unpublished) {
+    var mark = el('span', 'count', 'sin publicar')
+    mark.title = 'Esta rama todavía no existe en el remoto'
+    h.appendChild(mark)
+  }
   var tools = el('span', 'tools')
   tools.appendChild(iconBtn('fetch', 'Fetch', function () { act(r.key, 'fetch', null, 'Fetch listo') }))
-  tools.appendChild(iconBtn('pull', 'Pull (solo fast-forward)', function () { act(r.key, 'pull', null, 'Pull listo') }))
+  if (r.upstream) tools.appendChild(iconBtn('pull', 'Pull (solo fast-forward)', function () { act(r.key, 'pull', null, 'Pull listo') }))
   if (!r.protected) tools.appendChild(iconBtn('push', 'Push de esta rama', function () { pushDialog(r) }))
   h.appendChild(tools)
   h.onclick = function () { expanded[r.key] = !expanded[r.key]; render() }

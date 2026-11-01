@@ -375,6 +375,7 @@ async function act(item, body) {
     case 'fetch':
       return write(path, ['fetch', '--prune', 'origin'])
     case 'pull':
+      if (!state.upstream) throw new ActionError('Esta rama todavía no existe en el remoto: no hay nada para traer. Subila con Push.')
       return write(path, ['pull', '--ff-only'])
     case 'push':
       if (locked) throw new ActionError(`No se pushea ${state.branch}.`)
@@ -406,6 +407,8 @@ function readBody(req) {
 
 export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
   const token = process.env.MRG_TOKEN ?? randomBytes(32).toString('base64url')
+  // Se lee una sola vez: si el plugin se actualiza, un servidor viejo no debe servir una página que no sabe atender.
+  const page = readFileSync(INDEX)
   const queues = new Map()
   let lastUse = Date.now()
 
@@ -440,7 +443,7 @@ export function startServer({ port = 0, idleMs = 0, onIdle } = {}) {
     if (url.pathname === '/') {
       if (!allowedHost || !sameToken(q.get('t'), token)) return reply(res, 403, 'Falta el token', 'text/plain')
       lastUse = Date.now()
-      return reply(res, 200, readFileSync(INDEX), 'text/html; charset=utf-8')
+      return reply(res, 200, page, 'text/html; charset=utf-8')
     }
     if (!allowedHost || !sameToken(req.headers['x-token'], token)) return reply(res, 403, { error: 'token' })
     lastUse = Date.now()
