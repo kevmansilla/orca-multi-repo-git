@@ -20,7 +20,7 @@ Necesitás Orca 1.4.245 o más nuevo.
 
 ## Cómo se abre
 
-Con `Ctrl+Shift+J`, buscando **Source Control: Abrir**. También desde Settings → Plugins.
+Con `Ctrl+Shift+J`, buscando **Git: Source Control de todos los repos**. También desde Settings → Plugins.
 
 El atajo `Ctrl+Alt+Shift+G` no funciona con el foco en una terminal: Orca solo pasa los atajos de plugins cuando el foco está en otra parte.
 
@@ -38,15 +38,19 @@ El servidor queda siempre encendido, con unos 80 MB de memoria. Usa un puerto y 
 
 ### En qué proyectos aparece
 
-Cada pestaña del navegador de Orca es de un workspace: al cambiar de proyecto, la de otro no se ve. Para que la app esté en los proyectos que usás, listalos en `tabs` dentro de `policy.json`, con el nombre que tienen en Orca o con su carpeta:
+Cada pestaña del navegador de Orca es de un workspace: al cambiar de proyecto, la de otro no se ve. Cada una gasta unos 175 MB, por eso no va en todos. Con `tabsIdleHours` en `policy.json`, la app sigue a tu trabajo:
 
 ```json
-{ "tabs": ["Proyecto-Bot-Wp", "~/Dinerofull/crediweb"] }
+{ "tabsIdleHours": 2, "tabs": ["Proyecto-Bot-Wp"] }
 ```
 
-El servicio abre la pestaña en cada uno sin cambiarte de proyecto, la vuelve a abrir al arrancar Orca y también en un workspace nuevo que coincida. Si la cerrás en uno de esos proyectos, vuelve a aparecer en unos segundos: para sacarla, sacalo de la lista. Cada pestaña gasta unos 175 MB, por eso no va en todos los workspaces.
+- Aparece sola en los workspaces con actividad en las últimas `tabsIdleHours` horas (según la última actividad que registra Orca), sin cambiarte de proyecto.
+- Se cierra sola en los que llevan ese tiempo quietos. Una pestaña que abriste a mano dura por lo menos ese tiempo antes de cerrarse.
+- Los de `tabs` (nombre en Orca o carpeta) la tienen siempre. Es opcional.
 
-Sin `tabs`, la abre una vez por arranque de Orca, en el workspace activo.
+Si la cerrás en un workspace activo, vuelve a aparecer en unos segundos.
+
+Sin `tabsIdleHours`, la mantiene solo en los de `tabs`. Sin ninguna de las dos, la abre una vez por arranque de Orca, en el workspace activo.
 
 ## Protección
 

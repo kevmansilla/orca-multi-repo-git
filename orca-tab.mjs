@@ -26,11 +26,15 @@ export async function worktrees() {
   return all.filter((w) => !w.isArchived)
 }
 
-// Los workspaces que ya tienen la app abierta, en cualquier proyecto.
-export async function worktreesWithTab(port) {
+// Las pestañas de la app, en cualquier proyecto.
+export async function appTabs(port) {
   const { tabs = [] } = JSON.parse(await orca(['tab', 'list', '--worktree', 'all', '--json'])).result
-  return new Set(tabs.filter((t) => t.url.includes(`127.0.0.1:${port}`)).map((t) => t.worktreeId))
+  return tabs.filter((t) => t.url.includes(`127.0.0.1:${port}`)).map((t) => ({ worktreeId: t.worktreeId, page: t.browserPageId }))
 }
+
+export const worktreesWithTab = async (port) => new Set((await appTabs(port)).map((t) => t.worktreeId))
+
+export const closeTab = (page) => orca(['tab', 'close', '--page', page, '--json'])
 
 const FLOATING = 'global-floating-terminal'
 // Solo un shell esperando: si hay un programa o un agente adelante, el comando le llegaría como si fuera texto suyo.

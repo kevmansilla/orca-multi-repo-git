@@ -1,4 +1,5 @@
 {
+  "tabsIdleHours": 2,
   "tabs": [
     "Mi-Proyecto",
     "~/trabajo/web"

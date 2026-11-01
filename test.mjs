@@ -157,6 +157,20 @@ try {
   check('la pestaña fija reconoce el workspace por nombre', matches('Proyecto-Bot-Wp', ws))
   check('la pestaña fija reconoce el workspace por carpeta', matches('~/Proyecto/', ws) && matches(ws.path, ws))
   check('la pestaña fija no toma otro workspace', !matches('Proyecto', ws) && !matches('~/Proyecto/otro', ws))
+  const { plan } = await import('./orca-launch.mjs')
+  const H = 3_600_000
+  const now = 10 * H
+  const w = (id, ago) => ({ id, displayName: id, path: '/x/' + id, lastActivityAt: now - ago })
+  const wts = [w('activo', 0.1 * H), w('quieto', 5 * H), w('fijo', 9 * H)]
+  const tab = (id) => ({ worktreeId: id, page: 'p-' + id })
+  const viejas = new Map([['p-quieto', now - 3 * H], ['p-fijo', now - 9 * H]])
+  const auto = plan({ all: wts, tabs: [tab('quieto'), tab('fijo')], pinned: ['fijo'], idleMs: 2 * H, since: viejas, now })
+  check('abre la app donde hubo actividad reciente', auto.open.join() === 'activo')
+  check('la cierra donde está quieto, salvo en los fijos', auto.close.join() === 'p-quieto')
+  const recien = plan({ all: wts, tabs: [tab('quieto')], pinned: [], idleMs: 2 * H, since: new Map([['p-quieto', now - 0.5 * H]]), now })
+  check('no cierra una pestaña que el usuario acaba de abrir', recien.close.length === 0)
+  const fijos = plan({ all: wts, tabs: [tab('quieto')], pinned: ['fijo'], idleMs: null, since: viejas, now })
+  check('sin tabsIdleHours solo abre los fijos y no cierra nada', fijos.open.join() === 'fijo' && fijos.close.length === 0)
 } finally {
   close()
 }
