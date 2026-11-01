@@ -1,7 +1,7 @@
 // Orca no restaura las pestañas del navegador, los plugins no arrancan con ella, y cada pestaña es de un
 // workspace: al cambiar de proyecto, la app no está. Una pestaña gasta unos 175 MB, por eso no va en todos.
-// Con `tabsIdleHours` (policy.json), sigue al trabajo: la abre en los workspaces con actividad reciente y la
-// cierra en los que llevan ese tiempo quietos. Los de `tabs` la tienen siempre.
+// Con `tabsIdleHours` (policy.json), sigue al trabajo: la abre en el workspace que está mirando el usuario y en
+// los que tuvieron actividad reciente, y la cierra en los que llevan ese tiempo quietos. Los de `tabs` la tienen siempre.
 // Sin ninguna de las dos, la abre una vez por arranque de Orca, en el workspace activo.
 // Cada arranque de Orca reescribe orca-runtime.json: con Orca cerrada no se llama a su CLI.
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -14,6 +14,7 @@ const HOME = homedir()
 const RUNTIME = join(HOME, '.config/orca/orca-runtime.json')
 const POLICY_FILE = process.env.MRG_POLICY_FILE ?? join(HOME, '.config/orca-multi-repo-git/policy.json')
 const CHECK_MS = 5_000
+const RETRY_MS = 120_000
 
 const markPath = () => `${statePath()}.launch`
 
@@ -60,7 +61,7 @@ export function matches(entry, worktree) {
 // workspace quieto no se cierra hasta que pase el mismo tiempo.
 export function plan({ all, tabs, pinned, idleMs, since, now }) {
   const isPinned = (w) => pinned.some((e) => matches(e, w))
-  const recent = (w) => idleMs && now - (w.lastActivityAt ?? 0) < idleMs
+  const recent = (w) => idleMs && (w.isActive || now - (w.lastActivityAt ?? 0) < idleMs)
   const withTab = new Set(tabs.map((t) => t.worktreeId))
   const open = all.filter((w) => !withTab.has(w.id) && (isPinned(w) || recent(w))).map((w) => w.id)
   if (!idleMs) return { open, close: [] }
@@ -85,6 +86,8 @@ export function keepTabs(port, token) {
   const url = `http://127.0.0.1:${port}/?t=${token}`
   let busy = false
   const since = new Map()
+  // Un `tab create` puede no volver aunque Orca la abra igual: reintentarlo enseguida dejaba pestañas repetidas.
+  const tried = new Map()
   setInterval(async () => {
     const launch = currentLaunch()
     if (busy || !launch) return
@@ -98,7 +101,11 @@ export function keepTabs(port, token) {
         for (const t of tabs) if (!since.has(t.page)) since.set(t.page, now)
         for (const page of since.keys()) if (!tabs.some((t) => t.page === page)) since.delete(page)
         const todo = plan({ all, tabs, ...entries, since, now })
-        for (const id of todo.open) await openTabIn(url, id)
+        for (const id of todo.open) {
+          if (now - (tried.get(id) ?? 0) < RETRY_MS) continue
+          tried.set(id, now)
+          await openTabIn(url, id).catch((e) => console.error(`No se pudo abrir la pestaña en ${id}: ${e.message}`))
+        }
         for (const page of todo.close) await closeTab(page)
       }
     } catch {

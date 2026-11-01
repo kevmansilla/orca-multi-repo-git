@@ -170,6 +170,8 @@ try {
   const recien = plan({ all: wts, tabs: [tab('quieto')], pinned: [], idleMs: 2 * H, since: new Map([['p-quieto', now - 0.5 * H]]), now })
   check('no cierra una pestaña que el usuario acaba de abrir', recien.close.length === 0)
   const fijos = plan({ all: wts, tabs: [tab('quieto')], pinned: ['fijo'], idleMs: null, since: viejas, now })
+  const mirando = plan({ all: [{ ...w('quieto', 5 * H), isActive: true }], tabs: [], pinned: [], idleMs: 2 * H, since: viejas, now })
+  check('abre la app en el workspace que está mirando, aunque esté quieto', mirando.open.join() === 'quieto')
   check('sin tabsIdleHours solo abre los fijos y no cierra nada', fijos.open.join() === 'fijo' && fijos.close.length === 0)
 } finally {
   close()
