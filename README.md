@@ -34,7 +34,19 @@ bash scripts/install-service.sh url      # muestra la dirección para abrir en e
 bash scripts/install-service.sh remove   # lo desinstala
 ```
 
-El servidor queda siempre encendido, con unos 80 MB de memoria. Usa un puerto y un token fijos, guardados con permisos `0600` en `~/.config/orca-multi-repo-git/service.env`. Al actualizar el plugin se reinicia solo. La pestaña se abre en el workspace activo, no vuelve a la posición donde la tenías.
+El servidor queda siempre encendido, con unos 80 MB de memoria. Usa un puerto y un token fijos, guardados con permisos `0600` en `~/.config/orca-multi-repo-git/service.env`. Al actualizar el plugin se reinicia solo.
+
+### En qué proyectos aparece
+
+Cada pestaña del navegador de Orca es de un workspace: al cambiar de proyecto, la de otro no se ve. Para que la app esté en los proyectos que usás, listalos en `tabs` dentro de `policy.json`, con el nombre que tienen en Orca o con su carpeta:
+
+```json
+{ "tabs": ["Proyecto-Bot-Wp", "~/Dinerofull/crediweb"] }
+```
+
+El servicio abre la pestaña en cada uno sin cambiarte de proyecto, la vuelve a abrir al arrancar Orca y también en un workspace nuevo que coincida. Si la cerrás en uno de esos proyectos, vuelve a aparecer en unos segundos: para sacarla, sacalo de la lista. Cada pestaña gasta unos 175 MB, por eso no va en todos los workspaces.
+
+Sin `tabs`, la abre una vez por arranque de Orca, en el workspace activo.
 
 ## Protección
 

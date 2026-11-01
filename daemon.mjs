@@ -1,7 +1,7 @@
 // Proceso aparte para el servidor: Orca mata al worker a los 5 minutos sin eventos, y el uso de la app no cuenta.
 // Se apaga solo cuando pasan IDLE_MS sin pedidos; la pestaña abierta le manda un ping cada minuto.
 import { rmSync } from 'node:fs'
-import { openOnOrcaStart } from './orca-launch.mjs'
+import { keepTabs } from './orca-launch.mjs'
 import { readState, serverStamp, statePath, writeState } from './state.mjs'
 import { startServer } from './server.mjs'
 
@@ -23,5 +23,5 @@ process.on('SIGTERM', stop)
 // El servicio lo vuelve a levantar, así una actualización del plugin entra sin pasos a mano.
 if (managed) {
   setInterval(() => serverStamp() !== stamp && stop(), CODE_CHECK_MS).unref()
-  openOnOrcaStart(port, token)
+  keepTabs(port, token)
 }

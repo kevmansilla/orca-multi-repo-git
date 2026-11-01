@@ -1,4 +1,8 @@
 {
+  "tabs": [
+    "Mi-Proyecto",
+    "~/trabajo/web"
+  ],
   "exclude": [
     "carpeta-que-no-quiero-ver"
   ],

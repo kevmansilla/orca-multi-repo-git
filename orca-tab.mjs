@@ -18,6 +18,20 @@ function orca(args) {
 
 export const openTab = (url) => orca(['tab', 'create', '--url', url, '--json'])
 
+// Sin cambiar el workspace que está mirando el usuario: la pestaña queda creada en segundo plano.
+export const openTabIn = (url, worktreeId) => orca(['tab', 'create', '--url', url, '--worktree', `id:${worktreeId}`, '--json'])
+
+export async function worktrees() {
+  const { worktrees: all = [] } = JSON.parse(await orca(['worktree', 'list', '--json'])).result
+  return all.filter((w) => !w.isArchived)
+}
+
+// Los workspaces que ya tienen la app abierta, en cualquier proyecto.
+export async function worktreesWithTab(port) {
+  const { tabs = [] } = JSON.parse(await orca(['tab', 'list', '--worktree', 'all', '--json'])).result
+  return new Set(tabs.filter((t) => t.url.includes(`127.0.0.1:${port}`)).map((t) => t.worktreeId))
+}
+
 const FLOATING = 'global-floating-terminal'
 // Solo un shell esperando: si hay un programa o un agente adelante, el comando le llegaría como si fuera texto suyo.
 const AT_PROMPT = /[$#%→❯]\s*$/
@@ -41,6 +55,3 @@ export async function openTerminal({ title, command, floating = false }) {
   await orca(['terminal', 'switch', '--terminal', handle, '--json']).catch(() => {}) // solo la trae al frente
 }
 
-export async function tabIsOpen(port) {
-  return (await orca(['tab', 'list', '--json'])).includes(`127.0.0.1:${port}`)
-}

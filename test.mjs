@@ -1,7 +1,7 @@
 // Prueba las acciones de la app contra un repo descartable en una carpeta temporal. No toca los repos reales.
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const tmp = mkdtempSync(join(tmpdir(), 'mrg-test-'))
@@ -152,6 +152,11 @@ try {
   writeFileSync(join(repo, '.git', 'MERGE_HEAD'), 'x')
   check('ofrece continuar con un merge frenado', (await call('/api/repos?fresh=1'))[1][0].commands.some((c) => c.label === 'Continuar'))
   rmSync(join(repo, '.git', 'MERGE_HEAD'))
+  const { matches } = await import('./orca-launch.mjs')
+  const ws = { displayName: 'Proyecto-Bot-Wp', path: join(homedir(), 'Proyecto') }
+  check('la pestaña fija reconoce el workspace por nombre', matches('Proyecto-Bot-Wp', ws))
+  check('la pestaña fija reconoce el workspace por carpeta', matches('~/Proyecto/', ws) && matches(ws.path, ws))
+  check('la pestaña fija no toma otro workspace', !matches('Proyecto', ws) && !matches('~/Proyecto/otro', ws))
 } finally {
   close()
 }
