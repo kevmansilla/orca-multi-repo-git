@@ -74,10 +74,6 @@
   .repo.wt .name { color:var(--muted); }
   .more { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
   .dlg input { height:32px; padding:0 10px; }
-  .repo.plain { padding-left:24px; cursor:default; }
-  .repo.plain:hover { background:none; }
-  .repo.plain .name { color:var(--faint); font-weight:400; }
-  .repo.plain .count { display:block; color:var(--faint); }
   .name { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:400; color:var(--soft); }
   .repo:hover .name, .repo.open .name { color:var(--fg); }
   .folder { color:var(--faint); }
@@ -636,17 +632,7 @@ function folderIcon(r) {
   if (r.color) icon.style.color = r.color // el color que el repo tiene en Orca
   return icon
 }
-function plainView(r) {
-  var row = el('div', 'repo plain')
-  row.title = 'Este proyecto de Orca no tiene un repo de git'
-  row.appendChild(folderIcon(r))
-  row.appendChild(el('span', 'name', r.name))
-  row.appendChild(el('span', 'grow'))
-  row.appendChild(el('span', 'count', 'sin git'))
-  return row
-}
 function repoView(r) {
-  if (r.plain) return plainView(r)
   var wrap = el('section')
   var open = !!expanded[r.key]
   var h = el('div', 'repo' + (open ? ' open' : '') + (r.worktreeOf ? ' wt' : ''))
@@ -725,7 +711,7 @@ function spaceView(name, repos, term) {
   repos.forEach(function (r) { kids.appendChild(repoView(r)) })
   list.appendChild(kids)
 }
-function isUnpublished(r) { return !r.plain && !r.protected && !r.detached && !r.upstream }
+function isUnpublished(r) { return !r.protected && !r.detached && !r.upstream }
 var FILTERS = {
   cambios: { many: 'con cambios', test: function (r) { return r.staged.length + r.changes.length > 0 } },
   subir: { many: 'para subir', test: function (r) { return r.ahead > 0 || isUnpublished(r) } },
@@ -736,7 +722,7 @@ function renderSummary() {
   box.textContent = ''
   var any = false
   Object.keys(FILTERS).forEach(function (key) {
-    var count = data.filter(function (r) { return !r.plain && FILTERS[key].test(r) }).length
+    var count = data.filter(FILTERS[key].test).length
     if (!count) {
       if (filter === key) filter = ''
       return
@@ -758,7 +744,7 @@ function render() {
   var spaces = []
   data.forEach(function (r) {
     if (term && (r.name + ' ' + (r.branch || '')).toLowerCase().indexOf(term) < 0) return
-    if (filter && (r.plain || !FILTERS[filter].test(r))) return
+    if (filter && !FILTERS[filter].test(r)) return
     var last = spaces[spaces.length - 1]
     if (last && last.name === r.group) last.repos.push(r)
     else spaces.push({ name: r.group, repos: [r] })

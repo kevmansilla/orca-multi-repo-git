@@ -157,7 +157,6 @@ function worktreesOf(item) {
 function withWorktrees(items) {
   const seen = new Set(items.map((r) => r.key))
   return items.flatMap((item) => {
-    if (item.plain) return [item]
     const extra = worktreesOf(item).filter((w) => !seen.has(w.key))
     extra.forEach((w) => seen.add(w.key))
     return [item, ...extra]
@@ -183,11 +182,7 @@ function listRepos() {
     const group = groups.get(repo.projectGroupId)?.name ?? 'Sin grupo'
     const color = COLOR_RE.test(repo.badgeColor ?? '') ? repo.badgeColor : null
     if (isRepo(path)) found.push({ key: path, name: repo.displayName || basename(path), path, group, color })
-    else {
-      const nested = nestedRepos(path)
-      for (const p of nested) found.push({ key: p, name: basename(p), path: p, group, color })
-      if (!nested.length) found.push({ key: path, name: repo.displayName || basename(path), path, group, color, plain: true })
-    }
+    else for (const p of nestedRepos(path)) found.push({ key: p, name: basename(p), path: p, group, color })
   }
   return withWorktrees(found)
 }
@@ -348,7 +343,6 @@ async function unstagedFiles(path) {
 const withFlag = (files) => files.map((f) => (isSensitive(f.p) ? { ...f, sensitive: true } : f))
 
 async function summary(item) {
-  if (item.plain) return { key: item.key, name: item.name, group: item.group, color: item.color, plain: true, staged: [], changes: [] }
   const { head, staged, changes } = await status(item.path)
   const root = item.root ?? item.path
   const { blocked, base, deploys = false } = await policy(item.path, root)
@@ -568,7 +562,7 @@ export function startServer({ port = 0, idleMs = 0, onIdle, terminal = openTermi
   async function fetchAll() {
     if (Date.now() - lastFetch < FETCH_EVERY_MS) return { skipped: true }
     lastFetch = Date.now()
-    const items = listRepos().filter((r) => !r.plain)
+    const items = listRepos()
     let failed = 0
     async function worker() {
       for (let item = items.shift(); item; item = items.shift()) {
@@ -604,7 +598,7 @@ export function startServer({ port = 0, idleMs = 0, onIdle, terminal = openTermi
 
   function repoOf(key) {
     const item = listRepos().find((r) => r.key === key)
-    if (!item || item.plain) throw new ActionError('Repo desconocido.')
+    if (!item) throw new ActionError('Repo desconocido.')
     return item
   }
 
