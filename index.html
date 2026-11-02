@@ -79,7 +79,7 @@
   .name { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:400; color:var(--soft); }
   .repo:hover .name, .repo.open .name { color:var(--fg); }
   .folder { color:var(--faint); }
-  .branch { display:flex; align-items:center; gap:4px; min-width:0; padding:1px 5px; border:0; border-radius:5px; background:none; color:var(--muted); font-size:12px; cursor:pointer; }
+  .branch { display:flex; align-items:center; gap:4px; min-width:0; overflow:hidden; padding:1px 5px; border:0; border-radius:5px; background:none; color:var(--muted); font-size:12px; cursor:pointer; }
   .branch:hover { background:var(--active); color:var(--fg); }
   .branch span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .branch .tail { flex:none; margin-left:-4px; }
@@ -451,6 +451,8 @@ function changesView(r, wrap) {
   wrap.appendChild(buttons)
   syncButtons(r, blocked).forEach(function (b) { wrap.appendChild(b) })
   if (blocked) wrap.appendChild(el('div', 'note', r.detached ? 'HEAD suelto: cambiá a una rama para commitear.' : r.branch + ' está protegida. Creá una rama desde origin/' + r.base + ' tocando el nombre de la rama.'))
+  if (r.crossedUpstream) wrap.appendChild(el('div', 'note warn', 'Esta rama sigue a ' + r.crossedUpstream + ': un git push a secas desde la terminal sube ahí.'))
+  if (r.ticket) wrap.appendChild(el('div', 'note', ticketNote(r.ticket)))
   if (r.staged.some(function (f) { return f.sensitive })) wrap.appendChild(el('div', 'note warn', 'Hay archivos en Staged que parecen secretos.'))
   group(r, 'Staged', r.staged, true, wrap)
   group(r, 'Cambios', r.changes, false, wrap)
@@ -477,6 +479,13 @@ function closeModal() { document.getElementById('modal').style.display = 'none' 
 document.getElementById('modal').onclick = function (e) { if (e.target === this) closeModal() }
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal() })
 // El botón que queda con foco siempre es la salida segura.
+function ticketNote(t) {
+  var parts = [t.id]
+  if (t.state) parts.push(t.state)
+  if (t.testMissing) parts.push('falta test.md')
+  if (t.deployPending) parts.push('deploy.md con pasos a mano')
+  return parts.join(' · ')
+}
 function dialog(title, lines, items, actions) {
   var box = document.getElementById('box')
   box.textContent = ''
@@ -579,7 +588,13 @@ function pushDialog(r) {
   api('/api/push?repo=' + encodeURIComponent(r.key)).then(function (j) {
     var run = function () { act(r.key, 'push', null, 'Push listo') }
     var lines = [{ text: j.remote }]
+    if (j.deploysBase) lines.push({ warn: true, text: 'En este repo, lo que llega a ' + j.deploysBase + ' por push se despliega.' })
+    if (j.crossedUpstream) lines.push({ warn: true, text: 'Esta rama sigue a ' + j.crossedUpstream + '. Desde acá sube a origin/' + j.branch + ' y corrige el seguimiento.' })
     if (j.sensitive.length) lines.push({ warn: true, text: 'Estos commits tocan archivos que parecen secretos: ' + j.sensitive.join(', ') })
+    if (j.contentHits.length) lines.push({ warn: true, text: 'Lo agregado parece tener datos sensibles: ' + j.contentHits.join(', ') })
+    if (j.scanFailed) lines.push({ warn: true, text: 'No se pudo revisar el contenido en busca de datos sensibles.' })
+    if (j.ticket && j.ticket.testMissing) lines.push({ text: j.ticket.id + ': falta test.md.' })
+    if (j.ticket && j.ticket.deployPending) lines.push({ text: j.ticket.id + ': deploy.md tiene pasos a mano.' })
     if (j.isNew) lines.push({ text: 'La rama todavía no existe en el remoto: se va a crear.' })
     var items = j.commits.map(function (c) {
       var li = el('li')
@@ -592,8 +607,9 @@ function pushDialog(r) {
     if (more > 0) items.push(el('li', '', 'y ' + more + ' más'))
     var nothing = !j.isNew && !j.count
     var title = nothing ? 'Nada para subir en ' + j.branch : 'Subir ' + j.count + (j.count === 1 ? ' commit' : ' commits') + ' de ' + j.branch
-    var actions = [{ label: nothing ? 'Cerrar' : 'Cancelar', safe: nothing || !!j.sensitive.length }]
-    if (!nothing) actions.push({ label: j.sensitive.length ? 'Subir igual' : 'Subir', kind: j.sensitive.length ? 'danger' : 'primary', safe: !j.sensitive.length, run: run })
+    var risky = !!(j.deploysBase || j.sensitive.length || j.contentHits.length || j.scanFailed)
+    var actions = [{ label: nothing ? 'Cerrar' : 'Cancelar', safe: nothing || risky }]
+    if (!nothing) actions.push({ label: risky ? 'Subir igual' : 'Subir', kind: risky ? 'danger' : 'primary', safe: !risky, run: run })
     dialog(title, lines, items, actions)
   }).catch(function (e) { toast(e.message) })
 }
@@ -670,6 +686,11 @@ function repoView(r) {
   h.appendChild(chip)
   h.appendChild(el('span', 'grow'))
   var dirty = r.staged.length + r.changes.length
+  if (r.ticket && r.ticket.state) {
+    var ticket = el('span', 'count', r.ticket.state)
+    ticket.title = ticketNote(r.ticket)
+    h.appendChild(ticket)
+  }
   if (dirty) h.appendChild(el('span', 'count dirty', String(dirty)))
   var sync = (r.ahead ? '↑' + r.ahead + ' ' : '') + (r.behind ? '↓' + r.behind : '')
   if (sync) h.appendChild(el('span', 'count', sync.trim()))

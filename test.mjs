@@ -223,7 +223,7 @@ try {
   check('la pestaña fija reconoce el workspace por nombre', matches('Proyecto-Bot-Wp', ws))
   check('la pestaña fija reconoce el workspace por carpeta', matches('~/Proyecto/', ws) && matches(ws.path, ws))
   check('la pestaña fija no toma otro workspace', !matches('Proyecto', ws) && !matches('~/Proyecto/otro', ws))
-  const { plan, settleOpened } = await import('./orca-launch.mjs')
+  const { plan, pendingTabs } = await import('./orca-launch.mjs')
   const H = 3_600_000
   const now = 10 * H
   const w = (id, ago) => ({ id, displayName: id, path: '/x/' + id, lastActivityAt: now - ago })
@@ -236,10 +236,9 @@ try {
   const recien = plan({ all: wts, tabs: [tab('quieto')], pinned: [], idleMs: 2 * H, since: new Map([['p-quieto', now - 0.5 * H]]), now })
   check('no cierra una pestaña que el usuario acaba de abrir', recien.close.length === 0)
   const fijos = plan({ all: wts, tabs: [tab('quieto')], pinned: ['fijo'], idleMs: null, since: viejas, now })
-  const abiertas = settleOpened(new Map([['sin-listar', false], ['listada', false], ['cerrada', true]]), [{ worktreeId: 'listada' }])
-  check('no reabre una pestaña que Orca no lista todavía', abiertas.get('sin-listar') === false)
-  check('recuerda la pestaña que ya figuró', abiertas.get('listada') === true)
-  check('reabre la que figuró y se cerró', !abiertas.has('cerrada'))
+  const abiertas = new Set(['sin-listar'])
+  check('no repite una pestaña que Orca no lista', pendingTabs(['sin-listar', 'nuevo'], abiertas, []).join() === 'nuevo')
+  check('no reabre una pestaña que figuró y dejó de figurar', pendingTabs(['listada'], abiertas, [{ worktreeId: 'listada' }]).length === 0 && pendingTabs(['listada'], abiertas, []).length === 0)
   const mirando = plan({ all: [{ ...w('quieto', 5 * H), isActive: true }], tabs: [], pinned: [], idleMs: 2 * H, since: viejas, now })
   check('abre la app en el workspace que está mirando, aunque esté quieto', mirando.open.join() === 'quieto')
   check('sin tabsIdleHours solo abre los fijos y no cierra nada', fijos.open.join() === 'fijo' && fijos.close.length === 0)

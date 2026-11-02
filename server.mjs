@@ -1,10 +1,10 @@
 // App local de Source Control. Escucha solo en 127.0.0.1, exige un token que cambia en cada arranque
 // y nunca commitea ni pushea en una rama desplegada.
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,9 @@ const WRITE_MS = 120_000
 const HASH_RE = /^[0-9a-f]{4,40}$/
 const COLOR_RE = /^#[0-9a-f]{3,8}$/i
 const PUSH_PREVIEW = 50
+const SCAN_MS = 15_000
+const TICKET_RE = /(?:^|\/)([a-z]+-\d+)(?:-|$)/i
+const TICKET_STATE_RE = /^- \*\*Estado:\*\*\s*`?([a-z][a-z -]*[a-z])/m
 const FETCH_EVERY_MS = 10 * 60_000
 const FETCH_MS = 30_000
 const FETCH_AT_ONCE = 4
@@ -214,8 +217,18 @@ function readPolicy() {
     floating: data?.terminal === 'floating',
     pullRequests: data?.pullRequests !== false,
     commands: (Array.isArray(data?.commands) ? data.commands : []).map(scoped),
-    worktrees: data?.worktrees ? scoped(data.worktrees) : null
+    worktrees: data?.worktrees ? scoped(data.worktrees) : null,
+    tickets: (Array.isArray(data?.tickets) ? data.tickets : []).map((t) => ({ ...scoped(t), dir: t.dir && expandHome(t.dir) })),
+    scan: data?.scan?.run ? { ...scoped(data.scan), run: expandHome(data.scan.run) } : null
   }
+}
+
+// Si el archivo o la clave no están, la lista queda vacía y los repos siguen protegidos.
+function listFrom(source) {
+  const data = source?.file ? readJson(expandHome(source.file)) : null
+  const value = String(source?.key ?? '').split('.').reduce((v, k) => v?.[k], data)
+  if (Array.isArray(value)) return value
+  return typeof value === 'string' ? value.split(',').map((s) => s.trim()).filter(Boolean) : []
 }
 
 const inScope = (entry, path) => !entry?.under || path === entry.under || path.startsWith(entry.under + sep)
@@ -239,6 +252,88 @@ function stopped(path) {
     return ['MERGE_HEAD', 'CHERRY_PICK_HEAD'].some((f) => existsSync(join(dir, f)))
   } catch {
     return false // el worktree se está borrando
+  }
+}
+
+function readText(file) {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+// Lo que tiene un archivo del ticket además de su plantilla. Los comentarios y títulos no cuentan.
+function ownLines(text, template) {
+  const lines = (t) => (t ?? '').replace(/<!--[\s\S]*?-->/g, '').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+  const known = new Set(lines(template))
+  return lines(text).filter((l) => !known.has(l))
+}
+
+function ticketFolder(dir, id) {
+  for (const place of [dir, join(dir, '_archivo')]) {
+    if (!existsSync(place)) continue
+    const name = readdirSync(place).find((n) => n.toUpperCase().startsWith(`${id}-`))
+    if (name) return join(place, name)
+  }
+  return null
+}
+
+function ticketOf(root, branch) {
+  const source = readPolicy().tickets.find((t) => t.dir && inScope(t, root))
+  const id = source && TICKET_RE.exec(branch)?.[1].toUpperCase()
+  const folder = id ? ticketFolder(source.dir, id) : null
+  if (!folder) return null
+  const template = (f) => readText(join(source.dir, '_template', f))
+  const deploy = readText(join(folder, 'deploy.md'))
+  return {
+    id,
+    state: TICKET_STATE_RE.exec(readText(join(folder, 'US.md')) ?? '')?.[1] ?? null,
+    testMissing: !ownLines(readText(join(folder, 'test.md')), template('test.md')).length,
+    deployPending: ownLines(deploy, template('deploy.md')).length > 0 && !/^- \*\*Estado:\*\*\s*`?ejecutado/m.test(deploy)
+  }
+}
+
+// Solo las líneas agregadas: lo que ya estaba en el repo no es parte de este push.
+function addedLines(diff) {
+  const files = new Map()
+  let file = null
+  let inHeader = false
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) inHeader = true
+    else if (inHeader && line.startsWith('+++ ')) file = line.slice(4).replace(/^b\//, '')
+    else if (line.startsWith('@@')) inHeader = false
+    else if (!inHeader && file && line.startsWith('+')) files.set(file, `${files.get(file) ?? ''}${line.slice(1)}\n`)
+  }
+  return files
+}
+
+const runScanner = (cmd, args) => new Promise((resolve) => {
+  execFile(cmd, args, { timeout: SCAN_MS, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    resolve({ code: error ? (typeof error.code === 'number' ? error.code : -1) : 0, output: `${stdout}\n${stderr}` })
+  })
+})
+
+// Devuelve archivo y tipo, nunca la línea: el valor encontrado puede ser el secreto.
+// Las copias van a una carpeta privada porque el scanner recibe rutas, y se borran enseguida.
+async function scanPush(root, path, range) {
+  const scan = readPolicy().scan
+  if (!scan || !inScope(scan, root)) return { hits: [], failed: false }
+  const files = addedLines(await git(path, '-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '--unified=0', '--diff-filter=d', range))
+  if (!files.size) return { hits: [], failed: false }
+  const dir = mkdtempSync(join(tmpdir(), 'mrg-scan-'))
+  try {
+    const names = [...files.keys()]
+    const copies = names.map((_, i) => join(dir, String(i)))
+    names.forEach((name, i) => writeFileSync(copies[i], files.get(name), { mode: 0o600 }))
+    const { code, output } = await runScanner(scan.run, copies)
+    if (code === 0) return { hits: [], failed: false }
+    if (code !== 1) return { hits: [], failed: true }
+    const hits = new Set()
+    for (const [, index, kind] of output.matchAll(/^\s*\S*\/(\d+):\d+\s+\[([^\]—]+?)\s*(?:—[^\]]*)?\]/gm)) hits.add(`${names[Number(index)]}: ${kind}`)
+    return { hits: [...hits], failed: !hits.size }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 
@@ -297,7 +392,10 @@ async function policy(path, root = path) {
     const name = basename(root)
     const base = data.repos?.[name] ?? data.default ?? strict.base
     if (data.git_libre?.includes(name)) return { blocked: new Set(), base }
-    return { blocked: new Set([base, data.diagnostico?.[name] ?? base]), base, deploys: true }
+    // Se liberan las ramas pero la base sigue desplegando: el aviso de los comandos se mantiene.
+    if (listFrom(rule.freeFrom).includes(name)) return { blocked: new Set(), base, deploys: !rule.protected }
+    // Con `protected`, lo desplegado no es la base: el aviso de que un push a la base despliega sería falso.
+    return { blocked: new Set([base, data.diagnostico?.[name] ?? base, ...(rule.protected ?? [])]), base, deploys: !rule.protected }
   }
   return { blocked: new Set(rule.protected ?? strict.blocked), base: rule.base ?? strict.base }
 }
@@ -349,11 +447,13 @@ async function summary(item) {
   const [ahead = '+0', behind = '-0'] = (head['branch.ab'] ?? '').split(' ')
   const branch = head['branch.head'] ?? '?'
   const upstream = head['branch.upstream'] ?? null
+  const detached = branch === '(detached)'
   const offersPr = readPolicy().pullRequests && upstream && !blocked.has(branch) && branch !== base && branch !== '(detached)'
   return {
     key: item.key, name: item.name, group: item.group, color: item.color, branch, base, deploys,
     worktreeOf: item.worktreeOf ?? null, ...commandsFor(root, { isMerging: stopped(item.path), base, isProtected: blocked.has(branch) }),
-    detached: branch === '(detached)', upstream,
+    detached, upstream, crossedUpstream: upstream && upstream !== `origin/${branch}` ? upstream : null,
+    ticket: detached ? null : ticketOf(root, branch),
     pr: offersPr ? prUrl(await remoteUrl(item.path), branch, base) : null,
     ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch),
     staged: withFlag(staged), changes: withFlag(changes)
@@ -398,18 +498,28 @@ async function pushPreview(item) {
   const { path } = item
   const state = await summary(item)
   if (state.protected || state.detached) throw new ActionError(`No se pushea ${state.branch}.`)
-  // Una rama sin upstream sube todo lo que tiene por encima de la base.
-  const range = `${state.upstream ? '@{u}' : `origin/${state.base}`}..HEAD`
-  const [log, count, files, url] = await Promise.all([
+  // El push va a origin/<rama> aunque el upstream sea otro, así que la comparación es contra esa rama.
+  const own = `refs/remotes/origin/${state.branch}`
+  const published = state.crossedUpstream ? !!(await git(path, 'for-each-ref', '--format=%(refname)', own)).trim() : !!state.upstream
+  // Una rama sin publicar sube todo lo que tiene por encima de la base.
+  const from = !published ? `origin/${state.base}` : state.crossedUpstream ? own : '@{u}'
+  const range = `${from}..HEAD`
+  const [log, count, files, url, scan] = await Promise.all([
     git(path, 'log', `-${PUSH_PREVIEW}`, '--format=%h%x1f%s', range),
     git(path, 'rev-list', '--count', range),
     git(path, 'log', '--name-only', '--diff-filter=d', '-z', '--format=', range),
-    git(path, 'remote', 'get-url', 'origin')
+    git(path, 'remote', 'get-url', 'origin'),
+    scanPush(item.root ?? path, path, `${from}...HEAD`)
   ])
   const touched = files.split('\0').map((f) => f.trim()).filter(Boolean)
   return {
     branch: state.branch,
-    isNew: !state.upstream,
+    isNew: !published,
+    deploysBase: state.deploys && state.branch === state.base ? state.base : null,
+    crossedUpstream: state.crossedUpstream,
+    ticket: state.ticket,
+    contentHits: scan.hits,
+    scanFailed: scan.failed,
     remote: url.trim().replace(/\/\/[^/@]+@/, '//'), // una URL https puede traer el token adentro
     count: Number(count) || 0,
     commits: log.split('\n').filter(Boolean).map((line) => {
@@ -509,7 +619,8 @@ async function act(item, body) {
       return write(path, ['pull', '--ff-only'])
     case 'push':
       if (locked) throw new ActionError(`No se pushea ${state.branch}.`)
-      return write(path, ['push', '-u', 'origin', 'HEAD'])
+      // Con HEAD, el pre-push recibe 'HEAD' en vez de la rama y no distingue este push de un `HEAD:master`.
+      return write(path, ['push', '-u', 'origin', `refs/heads/${state.branch}:refs/heads/${state.branch}`])
     default:
       throw new ActionError('Acción desconocida.')
   }

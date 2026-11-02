@@ -1,7 +1,7 @@
 // Orca no restaura las pestañas del navegador, los plugins no arrancan con ella, y cada pestaña es de un
 // workspace: al cambiar de proyecto, la app no está. Una pestaña gasta unos 175 MB, por eso no va en todos.
 // Con `tabsIdleHours` (policy.json), sigue al trabajo: la abre en el workspace que está mirando el usuario y en
-// los que tuvieron actividad reciente, y la cierra en los que llevan ese tiempo quietos. Los de `tabs` la tienen siempre.
+// los que tuvieron actividad reciente, una por workspace y por arranque de Orca, y la cierra en los que llevan ese tiempo quietos. Los de `tabs` la tienen siempre.
 // Sin ninguna de las dos, la abre una vez por arranque de Orca, en el workspace activo.
 // Cada arranque de Orca reescribe orca-runtime.json: con Orca cerrada no se llama a su CLI.
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -77,29 +77,25 @@ export function plan({ all, tabs, pinned, idleMs, since, now }) {
   return { open, close }
 }
 
-// `browser.tabList` puede no listar una pestaña que Orca sí muestra: "no figura" no quiere decir "no está".
-// Solo se reabre la que figuró y dejó de figurar, porque esa sí se cerró.
+// `browser.tabList` devuelve como mucho una pestaña por workspace, aunque Orca muestre varias, y no alcanza para saber
+// si falta una. Por eso cada workspace recibe una sola por arranque de Orca: solo se repite si la cerró el servicio.
 // Se guarda en disco porque cada actualización del plugin reinicia el servicio y las pestañas siguen ahí.
-export function settleOpened(opened, tabs) {
-  const listed = new Set(tabs.map((t) => t.worktreeId))
-  for (const [id, seen] of opened) {
-    if (listed.has(id)) opened.set(id, true)
-    else if (seen) opened.delete(id)
-  }
-  return opened
+export function pendingTabs(ids, opened, tabs) {
+  for (const t of tabs) opened.add(t.worktreeId)
+  return ids.filter((id) => !opened.has(id))
 }
 
 function readOpened(launch) {
   try {
     const saved = JSON.parse(readFileSync(openedPath(), 'utf8'))
-    return new Map(saved.launch === launch ? saved.opened : [])
+    return new Set(saved.launch === launch ? saved.worktrees : [])
   } catch {
-    return new Map() // todavía no se abrió ninguna en este arranque de Orca
+    return new Set() // todavía no se abrió ninguna en este arranque de Orca
   }
 }
 
 function saveOpened(launch, opened) {
-  writeFileSync(openedPath(), JSON.stringify({ launch, opened: [...opened] }), { mode: 0o600 })
+  writeFileSync(openedPath(), JSON.stringify({ launch, worktrees: [...opened] }), { mode: 0o600 })
 }
 
 async function openOnce(url, launch) {
@@ -126,19 +122,22 @@ export function keepTabs(port, token) {
         for (const t of tabs) if (!since.has(t.page)) since.set(t.page, now)
         for (const page of since.keys()) if (!tabs.some((t) => t.page === page)) since.delete(page)
         const todo = plan({ all, tabs, ...entries, since, now })
-        const opened = settleOpened(readOpened(launch), tabs)
-        for (const id of todo.open) {
-          if (opened.has(id) || now - (tried.get(id) ?? 0) < RETRY_MS) continue
+        const opened = readOpened(launch)
+        for (const id of pendingTabs(todo.open, opened, tabs)) {
+          if (now - (tried.get(id) ?? 0) < RETRY_MS) continue
           tried.set(id, now)
-          opened.set(id, false)
+          opened.add(id)
           saveOpened(launch, opened)
           await openTabIn(url, id).catch((e) => {
             console.error(`No se pudo abrir la pestaña en ${id}: ${e.message}`)
             if (!e.message.includes('no respondió')) opened.delete(id) // sin respuesta, Orca pudo abrirla igual
           })
         }
+        for (const page of todo.close) {
+          await closeTab(page)
+          opened.delete(tabs.find((t) => t.page === page)?.worktreeId)
+        }
         saveOpened(launch, opened)
-        for (const page of todo.close) await closeTab(page)
       }
     } catch {
       // al arrancar, la CLI de Orca tarda un poco en responder: se reintenta en la próxima vuelta
