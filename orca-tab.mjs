@@ -68,26 +68,9 @@ export const worktreesWithTab = async (port) => new Set((await appTabs(port)).ma
 
 export const closeTab = (page) => rpc('browser.tabClose', { page })
 
-const FLOATING = 'global-floating-terminal'
-// Solo un shell esperando: si hay un programa o un agente adelante, el comando le llegaría como si fuera texto suyo.
-const AT_PROMPT = /[$#%→❯]\s*$/
+const FLOATING = 'id:global-floating-terminal'
 
-const newTerminal = ({ title, command }) => orca(['terminal', 'create', '--title', title, '--command', command, '--focus', '--json'])
-
-async function floatingAtPrompt() {
-  const { terminals = [] } = JSON.parse(await orca(['terminal', 'list', '--json'])).result
-  const floating = terminals.find((t) => t.worktreeId === FLOATING && t.connected && t.writable)
-  if (!floating) return null
-  const { tail = [] } = JSON.parse(await orca(['terminal', 'read', '--terminal', floating.handle, '--json'])).result.terminal
-  const last = tail.filter((line) => line.trim()).at(-1) ?? ''
-  return AT_PROMPT.test(last) ? floating.handle : null
-}
-
-// La flotante no se puede crear desde acá: si no está disponible, el comando va a una pestaña nueva.
-export async function openTerminal({ title, command, floating = false }) {
-  const handle = floating ? await floatingAtPrompt().catch(() => null) : null
-  if (!handle) return newTerminal({ title, command })
-  await orca(['terminal', 'send', '--terminal', handle, '--text', command, '--enter', '--json'])
-  await orca(['terminal', 'switch', '--terminal', handle, '--json']).catch(() => {}) // solo la trae al frente
-}
-
+// Siempre una pestaña nueva, también en la flotante: las que ya están abiertas pueden ser un ssh a un servidor, y ni
+// el título ni el prompt lo dicen con certeza. Escribir ahí correría el comando en el servidor.
+export const openTerminal = ({ title, command, floating = false }) =>
+  orca(['terminal', 'create', ...(floating ? ['--worktree', FLOATING] : []), '--title', title, '--command', command, '--focus', '--json'])

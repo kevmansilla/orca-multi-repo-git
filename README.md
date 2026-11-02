@@ -83,7 +83,7 @@ Podés agregar botones que abren una terminal de Orca en el repo y corren tus co
 | `when: "feature"` | Solo parado en una rama no protegida |
 | `warn: true` | Pide confirmación en repos con regla `bases` |
 
-Con `"terminal": "floating"`, los comandos corren en la terminal flotante de Orca si está esperando un comando. Si no, o si tiene un programa abierto, se abre una pestaña nueva.
+Con `"terminal": "floating"`, cada comando abre una pestaña nueva en la terminal flotante de Orca, sin tocar las que ya están abiertas.
 
 Con `"pullRequests": false` se oculta el botón Abrir PR.
 
