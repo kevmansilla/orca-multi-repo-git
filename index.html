@@ -93,6 +93,12 @@
   .icon { width:24px; height:24px; flex:none; display:flex; align-items:center; justify-content:center; padding:0; border:0; border-radius:5px; background:none; color:var(--muted); cursor:pointer; }
   .icon:hover { background:var(--active); color:var(--fg); }
   .chev { color:var(--faint); transition:transform .12s; }
+  .icon:disabled, .chip:disabled, .branch:disabled { opacity:.45; background:none; color:var(--muted); cursor:not-allowed; }
+  textarea:disabled { opacity:.6; cursor:not-allowed; }
+  .repo.busy .tools, .repo.busy .count { display:none; }
+  .doing { display:flex; flex:none; align-items:center; gap:5px; font-size:11px; color:var(--muted); }
+  .spin { width:11px; height:11px; flex:none; border:1.5px solid var(--input); border-top-color:var(--fg); border-radius:50%; animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
   .chev.down { transform:rotate(90deg); }
 
   .body { padding:8px 6px 10px 18px; }
@@ -183,6 +189,9 @@ var drafts = {}
 var logs = {}
 var selected = ''
 var closedSpaces = readClosed()
+// Cada render rehace los botones: lo que está en curso se guarda acá y no en el botón.
+var busy = {}
+var diffRequest = 0
 var OFFLINE_POLLS = 3
 var SPLIT_WIDTH = 900
 var MAX_WORD_DIFF = 2000
@@ -195,6 +204,11 @@ var lastDiff = null
 var splitShown = false
 var offline = 0
 var lostToast = false
+var BUSY_TEXT = {
+  stage: 'Pasando a Staged', unstage: 'Sacando de Staged', stage_all: 'Pasando a Staged', unstage_all: 'Sacando de Staged',
+  discard: 'Descartando', commit: 'Commiteando', push: 'Subiendo', pull: 'Trayendo', fetch: 'Consultando el remoto',
+  switch: 'Cambiando de rama', create_branch: 'Creando la rama'
+}
 var list = document.getElementById('list')
 var find = document.getElementById('find')
 
@@ -255,19 +269,31 @@ function toast(text, ok) {
   if (ok) setTimeout(function () { t.style.display = 'none' }, 2500)
 }
 document.getElementById('toast').onclick = function () { this.style.display = 'none' }
+// Una cosa por repo a la vez: un segundo clic haría el commit dos veces o abriría otra terminal.
+function whileBusy(repo, text, work) {
+  if (busy[repo]) return Promise.resolve()
+  busy[repo] = text
+  render()
+  return work().finally(function () {
+    delete busy[repo]
+    render()
+  })
+}
 function act(repo, action, extra, okText) {
   var body = Object.assign({ repo: repo, action: action }, extra || {})
-  return fetch('/api/action', {
-    method: 'POST',
-    headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }).then(reply).then(function () {
-    if (okText) toast(okText, true)
-    delete logs[repo]
-    return load(true)
-  }).catch(function (e) {
-    if (e.sensitive) sensitiveDialog(repo, action, extra, okText, e.sensitive)
-    else toast(e.message)
+  return whileBusy(repo, BUSY_TEXT[action], function () {
+    return fetch('/api/action', {
+      method: 'POST',
+      headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(reply).then(function () {
+      if (okText) toast(okText, true)
+      delete logs[repo]
+      return load(true)
+    }).catch(function (e) {
+      if (e.sensitive) sensitiveDialog(repo, action, extra, okText, e.sensitive)
+      else toast(e.message)
+    })
   })
 }
 // Marca solo lo que cambió dentro de la línea: alcanza con recortar lo común de cada punta.
@@ -359,11 +385,22 @@ new ResizeObserver(function () {
 }).observe(document.getElementById('main'))
 document.getElementById('back').appendChild(svg('back'))
 document.getElementById('back').onclick = function () { document.body.classList.remove('detail') }
+// Si se elige otro archivo antes de que llegue la respuesta, gana el último elegido.
+function openDiff(title, query) {
+  var request = ++diffRequest
+  var heading = document.getElementById('title')
+  heading.textContent = 'Cargando…'
+  api(query).then(function (j) {
+    if (request === diffRequest) showDiff(title, j.diff || 'Sin diferencias de texto')
+  }).catch(function (e) {
+    if (request === diffRequest) heading.textContent = ''
+    toast(e.message)
+  })
+}
 function openFile(r, f, staged) {
   selected = r.key + '|' + staged + '|' + f.p
   render()
-  var q = '/api/diff?repo=' + encodeURIComponent(r.key) + '&path=' + encodeURIComponent(f.p) + '&staged=' + (staged ? 1 : 0)
-  api(q).then(function (j) { showDiff(r.name + ' · ' + f.p, j.diff || 'Sin diferencias de texto') }).catch(function (e) { toast(e.message) })
+  openDiff(r.name + ' · ' + f.p, '/api/diff?repo=' + encodeURIComponent(r.key) + '&path=' + encodeURIComponent(f.p) + '&staged=' + (staged ? 1 : 0))
 }
 function iconBtn(name, title, fn) {
   var b = el('button', 'icon')
@@ -469,9 +506,7 @@ function historyView(r, wrap) {
     item.appendChild(el('div', '', c.t))
     item.appendChild(el('div', 'meta', c.h + ' · ' + c.a + ' · ' + c.w))
     item.title = c.r || ''
-    item.onclick = function () {
-      api('/api/commit?repo=' + encodeURIComponent(r.key) + '&h=' + c.h).then(function (j) { showDiff(r.name + ' · ' + c.t, j.diff) }).catch(function (e) { toast(e.message) })
-    }
+    item.onclick = function () { openDiff(r.name + ' · ' + c.t, '/api/commit?repo=' + encodeURIComponent(r.key) + '&h=' + c.h) }
     wrap.appendChild(item)
   })
 }
@@ -523,11 +558,13 @@ function sensitiveDialog(repo, action, extra, okText, files) {
   dialog('Esto parece un secreto', [{ text: 'Si entra en un commit y lo subís, queda en el historial del remoto aunque después lo borres.' }], files.map(fileItem), actions)
 }
 function runInTerminal(r, command, extra) {
-  fetch('/api/run', {
-    method: 'POST',
-    headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
-    body: JSON.stringify(Object.assign({ repo: r.key, command: command }, extra || {}))
-  }).then(reply).catch(function (e) { toast(e.message) })
+  whileBusy(r.key, 'Abriendo la terminal', function () {
+    return fetch('/api/run', {
+      method: 'POST',
+      headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ repo: r.key, command: command }, extra || {}))
+    }).then(reply).catch(function (e) { toast(e.message) })
+  })
 }
 function commandClick(r, c) {
   if (!c.warn || !r.deploys) return runInTerminal(r, c.id)
@@ -585,7 +622,7 @@ function discardDialog(r, f) {
   ])
 }
 function pushDialog(r) {
-  api('/api/push?repo=' + encodeURIComponent(r.key)).then(function (j) {
+  whileBusy(r.key, 'Revisando qué se sube', function () { return api('/api/push?repo=' + encodeURIComponent(r.key)).then(function (j) {
     var run = function () { act(r.key, 'push', null, 'Push listo') }
     var lines = [{ text: j.remote }]
     if (j.deploysBase) lines.push({ warn: true, text: 'En este repo, lo que llega a ' + j.deploysBase + ' por push se despliega.' })
@@ -611,10 +648,10 @@ function pushDialog(r) {
     var actions = [{ label: nothing ? 'Cerrar' : 'Cancelar', safe: nothing || risky }]
     if (!nothing) actions.push({ label: risky ? 'Subir igual' : 'Subir', kind: risky ? 'danger' : 'primary', safe: !risky, run: run })
     dialog(title, lines, items, actions)
-  }).catch(function (e) { toast(e.message) })
+  }).catch(function (e) { toast(e.message) }) })
 }
 function branchPicker(r) {
-  api('/api/branches?repo=' + encodeURIComponent(r.key)).then(function (j) {
+  whileBusy(r.key, 'Cargando las ramas', function () { return api('/api/branches?repo=' + encodeURIComponent(r.key)).then(function (j) {
     var box = document.getElementById('box')
     box.textContent = ''
     var input = el('input')
@@ -648,7 +685,7 @@ function branchPicker(r) {
     paint()
     document.getElementById('modal').style.display = 'flex'
     input.focus()
-  }).catch(function (e) { toast(e.message) })
+  }).catch(function (e) { toast(e.message) }) })
 }
 function folderIcon(r) {
   var icon = svg('folder')
@@ -664,7 +701,7 @@ function dot(cls, title) {
 function repoView(r) {
   var wrap = el('section')
   var open = !!expanded[r.key]
-  var h = el('div', 'repo' + (open ? ' open' : '') + (r.worktreeOf ? ' wt' : ''))
+  var h = el('div', 'repo' + (open ? ' open' : '') + (r.worktreeOf ? ' wt' : '') + (busy[r.key] ? ' busy' : ''))
   if (r.worktreeOf) h.title = 'Worktree'
   var chev = svg('chevron', 12)
   chev.setAttribute('class', 'chev' + (open ? ' down' : ''))
@@ -704,6 +741,12 @@ function repoView(r) {
   if (r.upstream) tools.appendChild(iconBtn('pull', 'Pull (solo fast-forward)', function () { act(r.key, 'pull', null, 'Pull listo') }))
   if (!r.protected) tools.appendChild(iconBtn('push', 'Push de esta rama', function () { pushDialog(r) }))
   h.appendChild(tools)
+  if (busy[r.key]) {
+    var doing = el('span', 'doing')
+    doing.appendChild(el('span', 'spin'))
+    doing.appendChild(el('span', '', busy[r.key] + '…'))
+    h.appendChild(doing)
+  }
   h.onclick = function () {
     expanded[r.key] = !expanded[r.key]
     render()
@@ -724,6 +767,8 @@ function repoView(r) {
     moreActions(r, body)
     wrap.appendChild(body)
   }
+  // Las pestañas Cambios e Historial solo miran: siguen andando mientras dura la acción.
+  if (busy[r.key]) wrap.querySelectorAll('button:not(.seg button), textarea').forEach(function (n) { n.disabled = true })
   return wrap
 }
 function spaceView(name, repos, term) {
