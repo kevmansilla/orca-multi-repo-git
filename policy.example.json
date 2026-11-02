@@ -37,6 +37,16 @@
       "when": "merging"
     }
   ],
+  "tickets": [
+    {
+      "under": "~/trabajo",
+      "dir": "~/trabajo/harness/tickets"
+    }
+  ],
+  "scan": {
+    "under": "~/trabajo",
+    "run": "~/bin/mi-scanner"
+  },
   "worktrees": {
     "under": "~/trabajo",
     "create": "git mi-worktree {repo} {branch}",

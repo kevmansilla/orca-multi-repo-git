@@ -63,6 +63,8 @@ Para ajustarlo, copiá `policy.example.json` a `~/.config/orca-multi-repo-git/po
 | `"free": true` | Sin ramas protegidas |
 | `"protected"` y `"base"` | Protege esas ramas y crea las nuevas desde `base` |
 | `"bases"` | Lee la base de cada repo de un JSON: `{ "default": "main", "repos": { "web": "master" } }` |
+| `"bases"` y `"protected"` | Lo mismo, y protege también esas ramas. Para cuando lo desplegado no es la base, como `dev` → `main` |
+| `"bases"` y `"freeFrom"` | Deja sin ramas protegidas a los repos de una lista externa: `{ "file": "~/config.json", "key": "env.REPOS" }`. La clave puede tener un array o nombres separados por comas. Si no se puede leer, siguen protegidos |
 
 Cada regla se aplica con `path` (ese repo) o `under` (todo lo que esté adentro). `exclude` oculta las carpetas con ese nombre.
 
@@ -87,11 +89,17 @@ Con `"pullRequests": false` se oculta el botón Abrir PR.
 
 `worktrees` define `create` y `remove`, con `{repo}`, `{path}` y `{branch}` como variables. Los comandos corren con tus permisos, y la protección de ramas de la app no los alcanza.
 
+## Tickets
+
+`"tickets": [{ "under": "~/trabajo", "dir": "~/trabajo/harness/tickets" }]` une cada rama con la carpeta de su ticket. De `ABC-123-algo` busca `ABC-123-*` en `dir` y en `dir/_archivo`, y muestra el estado de `US.md` (`- **Estado:** en curso`). También avisa si `test.md` no tiene nada propio o si `deploy.md` tiene pasos sin ejecutar. Lo que coincide con `_template/` no cuenta.
+
 ## Secretos
 
-Antes de agregar archivos como `.env`, `*.pem` o `credentials`, la app pide confirmación. Agregar todo ofrece dejarlos afuera. Antes de cada push muestra el remoto y los commits, y avisa si tocan archivos así.
+Antes de agregar archivos como `.env`, `*.pem` o `credentials`, la app pide confirmación. Agregar todo ofrece dejarlos afuera. Antes de cada push muestra el remoto y los commits, y avisa si tocan archivos así, si el push despliega o si la rama sigue a otra.
 
-Se detectan por nombre, no por contenido: un secreto en un archivo común no se ve.
+Se detectan por nombre, no por contenido: un secreto en un archivo común no se ve, salvo que configures `scan`.
+
+`"scan": { "under": "~/trabajo", "run": "~/bin/mi-scanner" }` revisa antes del push las líneas agregadas. El programa recibe rutas de archivos y sale con 0 si no hay nada, o con 1 si encontró algo. Para ver qué encontró, tiene que imprimir `ruta:línea  [tipo]`; la app muestra el archivo y el tipo, nunca el valor. Si el programa falla, la app lo avisa y no deja de pedir confirmación.
 
 ## Pruebas
 

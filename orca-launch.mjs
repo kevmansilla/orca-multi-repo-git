@@ -17,6 +17,7 @@ const CHECK_MS = 5_000
 const RETRY_MS = 120_000
 
 const markPath = () => `${statePath()}.launch`
+const openedPath = () => `${statePath()}.tabs`
 
 function readMark() {
   try {
@@ -76,6 +77,31 @@ export function plan({ all, tabs, pinned, idleMs, since, now }) {
   return { open, close }
 }
 
+// `browser.tabList` puede no listar una pestaña que Orca sí muestra: "no figura" no quiere decir "no está".
+// Solo se reabre la que figuró y dejó de figurar, porque esa sí se cerró.
+// Se guarda en disco porque cada actualización del plugin reinicia el servicio y las pestañas siguen ahí.
+export function settleOpened(opened, tabs) {
+  const listed = new Set(tabs.map((t) => t.worktreeId))
+  for (const [id, seen] of opened) {
+    if (listed.has(id)) opened.set(id, true)
+    else if (seen) opened.delete(id)
+  }
+  return opened
+}
+
+function readOpened(launch) {
+  try {
+    const saved = JSON.parse(readFileSync(openedPath(), 'utf8'))
+    return new Map(saved.launch === launch ? saved.opened : [])
+  } catch {
+    return new Map() // todavía no se abrió ninguna en este arranque de Orca
+  }
+}
+
+function saveOpened(launch, opened) {
+  writeFileSync(openedPath(), JSON.stringify({ launch, opened: [...opened] }), { mode: 0o600 })
+}
+
 async function openOnce(url, launch) {
   if (launch === readMark()) return
   if ((await worktreesWithTab(Number(new URL(url).port))).size === 0) await openTab(url)
@@ -86,7 +112,6 @@ export function keepTabs(port, token) {
   const url = `http://127.0.0.1:${port}/?t=${token}`
   let busy = false
   const since = new Map()
-  // Un `tab create` puede no volver aunque Orca la abra igual: reintentarlo enseguida dejaba pestañas repetidas.
   const tried = new Map()
   setInterval(async () => {
     const launch = currentLaunch()
@@ -101,11 +126,18 @@ export function keepTabs(port, token) {
         for (const t of tabs) if (!since.has(t.page)) since.set(t.page, now)
         for (const page of since.keys()) if (!tabs.some((t) => t.page === page)) since.delete(page)
         const todo = plan({ all, tabs, ...entries, since, now })
+        const opened = settleOpened(readOpened(launch), tabs)
         for (const id of todo.open) {
-          if (now - (tried.get(id) ?? 0) < RETRY_MS) continue
+          if (opened.has(id) || now - (tried.get(id) ?? 0) < RETRY_MS) continue
           tried.set(id, now)
-          await openTabIn(url, id).catch((e) => console.error(`No se pudo abrir la pestaña en ${id}: ${e.message}`))
+          opened.set(id, false)
+          saveOpened(launch, opened)
+          await openTabIn(url, id).catch((e) => {
+            console.error(`No se pudo abrir la pestaña en ${id}: ${e.message}`)
+            if (!e.message.includes('no respondió')) opened.delete(id) // sin respuesta, Orca pudo abrirla igual
+          })
         }
+        saveOpened(launch, opened)
         for (const page of todo.close) await closeTab(page)
       }
     } catch {
