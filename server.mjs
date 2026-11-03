@@ -185,7 +185,11 @@ function listRepos() {
     const group = groups.get(repo.projectGroupId)?.name ?? 'Sin grupo'
     const color = COLOR_RE.test(repo.badgeColor ?? '') ? repo.badgeColor : null
     if (isRepo(path)) found.push({ key: path, name: repo.displayName || basename(path), path, group, color })
-    else for (const p of nestedRepos(path)) found.push({ key: p, name: basename(p), path: p, group, color })
+    // Un repo también puede tener otro adentro, ignorado por el de afuera (helpers dentro de
+    // juan_carlos_telegram): sin esto sus cambios no aparecían en ningún lado.
+    for (const p of nestedRepos(path)) {
+      if (!found.some((r) => r.key === p)) found.push({ key: p, name: basename(p), path: p, group, color })
+    }
   }
   return withWorktrees(found)
 }
@@ -553,8 +557,11 @@ async function terminalCommand(item, body) {
     }
     if (!item.worktreeOf) throw new ActionError('Esto no es un worktree.')
     const branch = (await git(item.path, 'symbolic-ref', '--short', '-q', 'HEAD')).trim()
-    if (!branch) throw new ActionError('El worktree no está en una rama.')
-    return { title: `borrar ${branch}`, command: fillCommand(worktrees.remove, { ...values, branch }) }
+    if (branch) return { title: `borrar ${branch}`, command: fillCommand(worktrees.remove, { ...values, branch }) }
+    // Detached (los de diagnóstico de bin/abrir-solucion): el comando configurado borra por rama y acá no hay
+    // ninguna, así que va por la ruta. Con cambios, git lo frena salvo que el usuario haya confirmado perderlos.
+    const force = body.force === true ? ' --force' : ''
+    return { title: `borrar ${item.name}`, command: `git -C ${shellQuote(root)} worktree remove${force} ${shellQuote(item.path)}` }
   }
   const entry = commands[Number(body.command)]
   if (!entry || !inScope(entry, root)) throw new ActionError('Comando desconocido.')
