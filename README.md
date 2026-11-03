@@ -48,7 +48,7 @@ Cada pestaña del navegador de Orca es de un workspace: al cambiar de proyecto, 
 - Se cierra sola en los que llevan ese tiempo quietos. Una pestaña que abriste a mano dura por lo menos ese tiempo antes de cerrarse.
 - Los de `tabs` (nombre en Orca o carpeta) la tienen siempre. Es opcional.
 
-Cada workspace la recibe una sola vez por arranque de Orca: si la cerrás, no vuelve hasta el próximo arranque.
+Si la cerrás, vuelve pasadas `tabsIdleHours` horas (2 sin ese valor), si el workspace sigue con actividad. Si Orca no la abrió (no respondió o dio error), se reintenta cada 2 minutos, hasta tres veces seguidas.
 
 Sin `tabsIdleHours`, la mantiene solo en los de `tabs`. Sin ninguna de las dos, la abre una vez por arranque de Orca, en el workspace activo.
 

@@ -228,7 +228,7 @@ try {
   check('la pestaña fija reconoce el workspace por nombre', matches('Proyecto-Bot-Wp', ws))
   check('la pestaña fija reconoce el workspace por carpeta', matches('~/Proyecto/', ws) && matches(ws.path, ws))
   check('la pestaña fija no toma otro workspace', !matches('Proyecto', ws) && !matches('~/Proyecto/otro', ws))
-  const { plan, pendingTabs } = await import('./orca-launch.mjs')
+  const { plan, pendingTabs, markTried, parseOpened } = await import('./orca-launch.mjs')
   const H = 3_600_000
   const now = 10 * H
   const w = (id, ago) => ({ id, displayName: id, path: '/x/' + id, lastActivityAt: now - ago })
@@ -241,9 +241,21 @@ try {
   const recien = plan({ all: wts, tabs: [tab('quieto')], pinned: [], idleMs: 2 * H, since: new Map([['p-quieto', now - 0.5 * H]]), now })
   check('no cierra una pestaña que el usuario acaba de abrir', recien.close.length === 0)
   const fijos = plan({ all: wts, tabs: [tab('quieto')], pinned: ['fijo'], idleMs: null, since: viejas, now })
-  const abiertas = new Set(['sin-listar'])
-  check('no repite una pestaña que Orca no lista', pendingTabs(['sin-listar', 'nuevo'], abiertas, []).join() === 'nuevo')
-  check('no reabre una pestaña que figuró y dejó de figurar', pendingTabs(['listada'], abiertas, [{ worktreeId: 'listada' }]).length === 0 && pendingTabs(['listada'], abiertas, []).length === 0)
+  const M = 60_000
+  const abiertas = new Map()
+  markTried(abiertas, 'sin-listar', now)
+  check('no repite enseguida una pestaña que intentó abrir', pendingTabs(['sin-listar', 'nuevo'], abiertas, [], now + M, 2 * H).join() === 'nuevo')
+  check('reintenta una pestaña que nunca apareció', pendingTabs(['sin-listar'], abiertas, [], now + 2 * M, 2 * H).join() === 'sin-listar')
+  markTried(abiertas, 'sin-listar', now + 2 * M)
+  markTried(abiertas, 'sin-listar', now + 4 * M)
+  check('después de tres intentos espera como una cerrada', pendingTabs(['sin-listar'], abiertas, [], now + 7 * M, 2 * H).length === 0 &&
+    pendingTabs(['sin-listar'], abiertas, [], now + 4 * M + 2 * H, 2 * H).join() === 'sin-listar')
+  check('no reabre enseguida una pestaña que figuró y dejó de figurar', pendingTabs(['listada'], abiertas, [{ worktreeId: 'listada' }], now, 2 * H).length === 0 &&
+    pendingTabs(['listada'], abiertas, [], now + 5 * M, 2 * H).length === 0)
+  check('la cerrada vuelve pasado tabsIdleHours', pendingTabs(['listada'], abiertas, [], now + 2 * H, 2 * H).join() === 'listada')
+  check('lee el estado viejo como pestañas recién cerradas', parseOpened('{"launch":"1","worktrees":["a"]}', '1', now).get('a').seen === true)
+  check('el estado de otro arranque de Orca no cuenta', parseOpened('{"launch":"1","worktrees":{"a":{"at":0,"tries":1,"seen":false}}}', '2', now).size === 0)
+  check('un estado ilegible arranca de cero', parseOpened('{roto', '1', now).size === 0)
   const mirando = plan({ all: [{ ...w('quieto', 5 * H), isActive: true }], tabs: [], pinned: [], idleMs: 2 * H, since: viejas, now })
   check('abre la app en el workspace que está mirando, aunque esté quieto', mirando.open.join() === 'quieto')
   check('sin tabsIdleHours solo abre los fijos y no cierra nada', fijos.open.join() === 'fijo' && fijos.close.length === 0)
