@@ -7,6 +7,9 @@
   "exclude": [
     "carpeta-que-no-quiero-ver"
   ],
+  "standingBranches": [
+    "agente-diagnostico"
+  ],
   "rules": [
     {
       "path": "~/proyectos/personal",

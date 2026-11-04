@@ -218,6 +218,8 @@ function readPolicy() {
   return {
     rules,
     exclude: Array.isArray(data?.exclude) ? data.exclude : [],
+    // Ramas que viven siempre (la de un agente que se resetea a la base): no son de trabajo, nunca "mergeadas".
+    standing: Array.isArray(data?.standingBranches) ? data.standingBranches : [],
     floating: data?.terminal === 'floating',
     pullRequests: data?.pullRequests !== false,
     commands: (Array.isArray(data?.commands) ? data.commands : []).map(scoped),
@@ -341,9 +343,9 @@ async function scanPush(root, path, range) {
   }
 }
 
-function commandsFor(root, { isMerging, base, isProtected }) {
+function commandsFor(root, { isMerging, base, isProtected, isStanding = false }) {
   const { commands, worktrees } = readPolicy()
-  const applies = (c) => inScope(c, root) && (c.when !== 'merging' || isMerging) && (c.when !== 'feature' || !isProtected)
+  const applies = (c) => inScope(c, root) && (c.when !== 'merging' || isMerging) && (c.when !== 'feature' || (!isProtected && !isStanding))
   const list = commands.flatMap((c, id) =>
     applies(c) ? [{ id, label: c.label.replaceAll('{base}', base), hint: c.hint ?? c.run, run: c.run, warn: !!c.warn, urgent: c.when === 'merging' }] : []
   )
@@ -444,6 +446,24 @@ async function unstagedFiles(path) {
 
 const withFlag = (files) => files.map((f) => (isSensitive(f.p) ? { ...f, sensitive: true } : f))
 
+const isAncestor = async (path, commit, ref) => (await run(['-C', path, 'merge-base', '--is-ancestor', commit, ref])).code === 0
+
+// Una rama recién sacada de la base también está "contenida" en ella: no es una mergeada. Se distingue por el commit con
+// que se creó, el más viejo de su reflog. Sin reflog (una rama traída del remoto) no se puede saber y se trata como propia.
+async function hasOwnCommits(path, branch) {
+  const created = (await git(path, 'reflog', 'show', '--format=%H', `refs/heads/${branch}`, '--')).trim().split('\n').pop()
+  if (!created) return true
+  return (await git(path, 'rev-list', '--count', `${created}..HEAD`)).trim() !== '0'
+}
+
+// 'remote' si la rama ya está entera en origin/<base>, 'local' si está en la <base> local y falta el push, o null.
+async function mergedInto(path, branch, base) {
+  if (!(await hasOwnCommits(path, branch))) return null
+  if (await isAncestor(path, 'HEAD', `refs/remotes/origin/${base}`)) return 'remote'
+  if (await isAncestor(path, 'HEAD', `refs/heads/${base}`)) return 'local'
+  return null
+}
+
 async function summary(item) {
   const { head, staged, changes } = await status(item.path)
   const root = item.root ?? item.path
@@ -453,13 +473,16 @@ async function summary(item) {
   const upstream = head['branch.upstream'] ?? null
   const detached = branch === '(detached)'
   const offersPr = readPolicy().pullRequests && upstream && !blocked.has(branch) && branch !== base && branch !== '(detached)'
+  const isStanding = readPolicy().standing.includes(branch)
+  const isFeature = !detached && branch !== base && !blocked.has(branch) && !isStanding
   return {
     key: item.key, name: item.name, group: item.group, color: item.color, branch, base, deploys,
-    worktreeOf: item.worktreeOf ?? null, ...commandsFor(root, { isMerging: stopped(item.path), base, isProtected: blocked.has(branch) }),
+    worktreeOf: item.worktreeOf ?? null, ...commandsFor(root, { isMerging: stopped(item.path), base, isProtected: blocked.has(branch), isStanding }),
     detached, upstream, crossedUpstream: upstream && upstream !== `origin/${branch}` ? upstream : null,
     ticket: detached ? null : ticketOf(root, branch),
     pr: offersPr ? prUrl(await remoteUrl(item.path), branch, base) : null,
     ahead: Number(ahead), behind: -Number(behind), protected: blocked.has(branch),
+    merged: isFeature && base ? await mergedInto(item.path, branch, base) : null,
     staged: withFlag(staged), changes: withFlag(changes)
   }
 }

@@ -66,7 +66,7 @@ Para ajustarlo, copiá `policy.example.json` a `~/.config/orca-multi-repo-git/po
 | `"bases"` y `"protected"` | Lo mismo, y protege también esas ramas. Para cuando lo desplegado no es la base, como `dev` → `main` |
 | `"bases"` y `"freeFrom"` | Deja sin ramas protegidas a los repos de una lista externa: `{ "file": "~/config.json", "key": "env.REPOS" }`. La clave puede tener un array o nombres separados por comas. Si no se puede leer, siguen protegidos |
 
-Cada regla se aplica con `path` (ese repo) o `under` (todo lo que esté adentro). `exclude` oculta las carpetas con ese nombre.
+Cada regla se aplica con `path` (ese repo) o `under` (todo lo que esté adentro). `exclude` oculta las carpetas con ese nombre. `standingBranches` lista ramas que viven siempre (la de un agente que se resetea a la base): no se marcan "mergeadas" ni ofrecen los comandos `when: "feature"`.
 
 La protección es de esta app: no frena un `git push` hecho desde la terminal.
 

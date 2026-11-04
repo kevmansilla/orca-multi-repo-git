@@ -87,6 +87,7 @@
   .grow { flex:1; min-width:0; }
   .count { flex:none; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
   .count.dirty { color:var(--warn); }
+  .count.merged { color:var(--add); }
   .tools { display:none; flex:none; gap:1px; }
   .repo:hover .tools, .repo:focus-within .tools { display:flex; }
   .repo:hover .count { display:none; }
@@ -738,6 +739,13 @@ function repoView(r) {
     var ticket = el('span', 'count', r.ticket.state)
     ticket.title = ticketNote(r.ticket)
     h.appendChild(ticket)
+  }
+  if (r.merged) {
+    var merged = el('span', 'count merged', r.merged === 'remote' ? 'mergeada' : 'mergeada sin pushear')
+    merged.title = r.merged === 'remote'
+      ? 'Esta rama ya está entera en origin/' + r.base
+      : 'Esta rama ya está en ' + r.base + ' local, pero falta el push de ' + r.base
+    h.appendChild(merged)
   }
   if (dirty) h.appendChild(el('span', 'count dirty', String(dirty)))
   var sync = (r.ahead ? '↑' + r.ahead + ' ' : '') + (r.behind ? '↓' + r.behind : '')

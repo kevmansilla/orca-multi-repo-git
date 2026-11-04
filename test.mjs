@@ -223,6 +223,27 @@ try {
   writeFileSync(join(repo, '.git', 'MERGE_HEAD'), 'x')
   check('ofrece continuar con un merge frenado', (await call('/api/repos?fresh=1'))[1][0].commands.some((c) => c.label === 'Continuar'))
   rmSync(join(repo, '.git', 'MERGE_HEAD'))
+  const wtMerge = join(tmp, 'wt-merge')
+  const merged = async () => (await call('/api/repos?fresh=1'))[1].find((r) => r.key === wtMerge).merged
+  sh(repo, 'git', 'fetch', '-q', 'origin')
+  sh(repo, 'git', 'worktree', 'add', '-q', '-b', 'rama-merge', wtMerge, 'origin/master')
+  check('una rama recién sacada de la base no figura como mergeada', (await merged()) === null)
+  writeFileSync(join(wtMerge, 'm.txt'), 'm\n')
+  sh(wtMerge, 'git', 'add', 'm.txt')
+  sh(wtMerge, 'git', 'commit', '-qm', 'para mergear')
+  check('con commits propios sin mergear no figura como mergeada', (await merged()) === null)
+  // Un merge --no-ff a master sin checkoutearla: en este punto master puede estar abierta en el repo de prueba.
+  const mergeCommit = sh(repo, 'git', 'commit-tree', 'rama-merge^{tree}', '-p', 'origin/master', '-p', 'rama-merge', '-m', 'merge').trim()
+  sh(repo, 'git', 'update-ref', 'refs/heads/master', mergeCommit)
+  check('mergeada en la base local y sin push', (await merged()) === 'local')
+  sh(repo, 'git', 'update-ref', 'refs/remotes/origin/master', mergeCommit)
+  check('mergeada y pusheada', (await merged()) === 'remote')
+  const policyFile = process.env.MRG_POLICY_FILE
+  const policyBefore = readFileSync(policyFile, 'utf8')
+  writeFileSync(policyFile, JSON.stringify({ ...JSON.parse(policyBefore), standingBranches: ['rama-merge'] }))
+  const standing = (await call('/api/repos?fresh=1'))[1].find((r) => r.key === wtMerge)
+  check('una rama fija (standingBranches) no figura como mergeada ni ofrece el comando de rama', standing.merged === null && !standing.commands.some((c) => c.label.startsWith('A ')))
+  writeFileSync(policyFile, policyBefore)
   const { matches } = await import('./orca-launch.mjs')
   const ws = { displayName: 'Proyecto-Bot-Wp', path: join(homedir(), 'Proyecto') }
   check('la pestaña fija reconoce el workspace por nombre', matches('Proyecto-Bot-Wp', ws))
